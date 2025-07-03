@@ -1,0 +1,204 @@
+//
+// Forest mask validation with LUCAS points
+//
+
+// CZ
+var cz = ee.FeatureCollection('projects/tidy-forest-404511/assets/hranice_cr');
+
+/*
+// 2. CORINE 2018 
+var corine = ee.Image('COPERNICUS/CORINE/V20/100m/2018')
+  .select('landcover')
+  .clip(cz);
+var forestMask = corine.eq(311).or(corine.eq(312)).or(corine.eq(313)).rename('forest_mask');
+
+
+
+// 3. High Resolution Layer Tree Cover and Forests 
+var corine = ee.Image("projects/tidy-forest-404511/assets/HE_2018_100m_utm")
+  .clip(cz);  
+
+// Forest mask 1 and 2 categories
+var forestMask = corine.eq(1).or(corine.eq(2)).rename('forest_mask');
+*/
+
+// Dynamic world  
+var year = 2018;
+
+var visParams = {
+  min: 0,
+  max: 1,
+  palette: ['ffffff', '006400']
+};
+
+// Creating a collection for the period May–October
+var seasonalCollection = [];
+
+for (var m = 5; m <= 10; m++) {
+  var start = ee.Date.fromYMD(year, m, 1);
+  var end = start.advance(1, 'month');
+
+  var dw = ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1")
+    .filterDate(start, end)
+    .filterBounds(cz)
+    .select('trees');
+
+  var meanTrees = dw.mean().clip(cz);
+  seasonalCollection.push(meanTrees);
+}
+
+// Average values for May-October
+var seasonalMean = ee.ImageCollection(seasonalCollection).mean().clip(cz);
+
+// Forest layer: values of 1 for forest (coverage greater than 50%)
+var forestMask = seasonalMean.gte(0.5).rename('forest_mask');;  
+
+Map.addLayer(
+  forestMask.updateMask(forestMask),
+  {palette: ['white', 'darkgreen']},
+  'Průměrný les (květen–říjen ' + year + ')'
+);  
+
+  
+  
+
+
+// Loading LUCAS and selecting polygons in the Czech Republic
+var lucas = ee.FeatureCollection('JRC/LUCAS_HARMO/COPERNICUS_POLYGONS/V1/2018')
+  .filterBounds(cz);
+
+var forestCodes = ['C10', 'C21', 'C22', 'C23', 'C31', 'C32', 'C33']; // Kódy pro lesy
+
+// LUCAS forest
+var lucasForest = lucas
+  .filter(ee.Filter.inList('lc1', forestCodes))
+  .filter(ee.Filter.gt('lc1_perc', '> 75')) 
+  .filter(ee.Filter.gt('tree_height_survey', '> 5')); 
+
+// LUCAS other
+var lucasOther = lucas
+  .filter(ee.Filter.inList('lc1', forestCodes).not()) 
+  .filter(
+    ee.Filter.or(
+      ee.Filter.inList('lc1', forestCodes).not(),
+      ee.Filter.and(
+        ee.Filter.lt('lc1_perc', '> 75'),
+        ee.Filter.lt('tree_height_survey', '> 5')
+      )
+    )
+  );
+
+
+// Verification of overlap with CORINE forest mask (more than 50%)
+var checkedForest = lucasForest.map(function(feature) {
+  var forestFraction = forestMask.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: feature.geometry(),
+    scale: 100,
+    maxPixels: 1e13
+  }).get('forest_mask');
+
+  var isInForest = ee.Algorithms.If(
+    forestFraction, 
+    ee.Number(forestFraction).gt(0.25), 
+    0 
+  );
+
+  return feature.set('corine_forest_overlap_forest', isInForest); 
+});
+
+var checkedOther = lucasOther.map(function(feature) {
+  var forestFraction = forestMask.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: feature.geometry(),
+    scale: 100,
+    maxPixels: 1e13
+  }).get('forest_mask');
+
+  var isInForest = ee.Algorithms.If(
+    forestFraction, 
+    ee.Number(forestFraction).gt(0.25), 
+    0 
+  );
+
+  return feature.set('corine_forest_overlap_other', isInForest); 
+});
+
+// Distribution of "LUCAS forests" and "LUCAS other" points according to their relationship to CORINE forests:
+
+// LUCAS forests in CORINE forest (forests in CORINE)
+var lucasInAndCorineIn = checkedForest.filter(ee.Filter.eq('corine_forest_overlap_forest', 1))
+                                       .filter(ee.Filter.inList('lc1', forestCodes));
+
+// LUCAS forests outside CORINE forest (forests in LUCAS but not in CORINE)
+var lucasInAndCorineOut = checkedForest.filter(ee.Filter.eq('corine_forest_overlap_forest', 0))
+                                        .filter(ee.Filter.inList('lc1', forestCodes));
+
+// LUCAS others in CORINE forest (not forests in LUCAS, but forests in CORINE)
+var lucasNotInAndCorineIn = checkedOther.filter(ee.Filter.eq('corine_forest_overlap_other', 1))
+                                         .filter(ee.Filter.inList('lc1', forestCodes).not());  // Ne lesní typy v LUCAS
+
+// LUCAS other than CORINE forest (not forests in LUCAS and not in CORINE)
+var lucasNotInAndCorineOut = checkedOther.filter(ee.Filter.eq('corine_forest_overlap_other', 0))
+                                          .filter(ee.Filter.inList('lc1', forestCodes).not());  // Ne lesní typy v LUCAS
+
+// Results
+lucasInAndCorineIn.size().evaluate(function(n) {
+  print('Number of LUCAS forest points in CORINE forest:', n);
+});
+
+lucasInAndCorineOut.size().evaluate(function(n) {
+  print('Number of LUCAS forest points outside CORINE forest:', n);
+});
+
+lucasNotInAndCorineIn.size().evaluate(function(n) {
+  print('Number of LUCAS other points in CORINE forest:', n);
+});
+
+lucasNotInAndCorineOut.size().evaluate(function(n) {
+  print('Number of LUCAS other points outside CORINE forest:', n);
+});
+
+// Total number of LUCAS forest and other points
+lucasForest.size().evaluate(function(n) {
+  print('Total number of LUCAS forest points:', n);
+});
+
+lucasOther.size().evaluate(function(n) {
+  print('Total number of LUCAS other points:', n);
+});
+
+// Calculate metrics (Recall, Precision) for accuracy
+var truePositives = checkedForest.filter(ee.Filter.eq('corine_forest_overlap_forest', 1)).size();
+var falseNegatives = checkedOther.filter(ee.Filter.eq('corine_forest_overlap_other', 1)).size();
+var falsePositives = checkedForest.filter(ee.Filter.eq('corine_forest_overlap_forest', 0)).size();
+var total = lucas.size();
+
+// Compute Recall and Precision
+truePositives.evaluate(function(tp) {
+  falseNegatives.evaluate(function(fn) {
+    falsePositives.evaluate(function(fp) {
+      total.evaluate(function(t) {
+
+        // Recall: TP / (TP + FN)
+        var recall = tp / (tp + fn);
+        print('Recall:', (recall * 100).toFixed(2) + '%');
+
+        // Precision: TP / (TP + FP)
+        var precision = tp / (tp + fp);
+        print('Precision:', (precision * 100).toFixed(2) + '%');
+
+        // Total number of points
+        print('Total number of LUCAS points:', t);
+      });
+    });
+  });
+});
+
+// Map display
+Map.centerObject(cz, 7);
+Map.addLayer(forestMask.updateMask(forestMask), {palette: ['green']}, 'CORINE forest');
+Map.addLayer(lucasInAndCorineIn, {color: 'blue'}, 'LUCAS forest & CORINE forest');
+Map.addLayer(lucasInAndCorineOut, {color: 'red'}, 'LUCAS forest & CORINE non-forest');
+Map.addLayer(lucasNotInAndCorineIn, {color: 'yellow'}, 'LUCAS other & CORINE forest');
+Map.addLayer(lucasNotInAndCorineOut, {color: 'orange'}, 'LUCAS other & CORINE other');
