@@ -1,0 +1,83 @@
+// Place: Region Liberec
+var liberecky = ee.FeatureCollection('projects/tidy-forest-404511/assets/liberecky');
+Map.centerObject(liberecky, 9);
+Map.addLayer(liberecky, {}, 'Liberecký kraj');
+
+// Sentinel-2: Summer 2018
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(liberecky)
+  .filterDate('2018-06-01', '2018-09-30')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+  .map(function(image) {
+    var scl = image.select('SCL');
+    var cloudMask = scl.neq(3).and(scl.neq(8)).and(scl.neq(9)).and(scl.neq(10));
+    return image.updateMask(cloudMask);
+  })
+  .median()
+  .clip(liberecky);
+
+// Calculation of vegetation indices
+var ndvi = s2.normalizedDifference(['B8', 'B4']).rename('NDVI');
+
+var savi = s2.expression(
+  '((NIR - RED) * (1 + L)) / (NIR + RED + L)', {
+    'NIR': s2.select('B8'),
+    'RED': s2.select('B4'),
+    'L': 0.5
+  }).rename('SAVI');
+
+var ndvi705 = s2.expression(
+  '(B750 - B705) / (B750 + B705)', {
+    'B750': s2.select('B6'),
+    'B705': s2.select('B5')
+  }).rename('NDVI705');
+
+var msi = s2.select('B11').divide(s2.select('B8')).rename('MSI');
+
+// 4. Elevace and slope
+var dem = ee.Image('USGS/SRTMGL1_003').clip(liberecky);
+var elevation = dem.rename('elevation');
+var slope = ee.Terrain.slope(dem).rename('slope');
+
+
+var stack = ndvi
+  .addBands([savi, ndvi705, msi, elevation, slope]);
+
+// Visualization
+Map.addLayer(ndvi, {min: 0, max: 1}, 'NDVI');
+Map.addLayer(savi, {min: 0, max: 1}, 'SAVI');
+Map.addLayer(ndvi705, {min: 0, max: 1}, 'NDVI705');
+Map.addLayer(msi, {min: 0, max: 2}, 'MSI');
+Map.addLayer(elevation, {min: 200, max: 1600}, 'Elevation');
+Map.addLayer(slope, {min: 0, max: 45}, 'Slope');
+
+// Sampling
+var sample = stack.sample({
+  region: liberecky.geometry(),
+  scale: 100,
+  numPixels: 5000,
+  geometries: false,
+  seed: 123
+});
+
+// correlation matrix
+var bandNames = stack.bandNames();
+var correlationMatrix = [];
+
+bandNames.evaluate(function(names) {
+  for (var i = 0; i < names.length; i++) {
+    var row = [];
+    for (var j = 0; j < names.length; j++) {
+      var var1 = names[i];
+      var var2 = names[j];
+      var corr = sample.reduceColumns({
+        reducer: ee.Reducer.pearsonsCorrelation(),
+        selectors: [var1, var2]
+      }).get('correlation');
+      row.push(corr);
+    }
+    correlationMatrix.push(row);
+  }
+
+  print('Correlation matrix (Pearson):', ee.Array(correlationMatrix));
+});
