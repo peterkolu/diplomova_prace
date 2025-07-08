@@ -1,0 +1,95 @@
+// Validation of AGB modeling results in forests
+
+var region = ee.FeatureCollection('projects/tidy-forest-404511/assets/hranice_cr');
+var clc2018 = ee.Image('COPERNICUS/CORINE/V20/100m/2018')
+  .select('landcover')
+  .clip(region);
+var forestMask = clc2018.eq(311).or(clc2018.eq(312)).or(clc2018.eq(313)).selfMask();
+
+// AGB maps
+function loadAGB(year) {
+  return {
+    pred: ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_' + year + '_etrs').rename('AGB'),
+    ref: ee.Image('projects/tidy-forest-404511/assets/ESA_AGB_' + year + '_UTM').rename('AGB')
+  };
+}
+
+// Validation and difference maps
+var years = [2018, 2019, 2020, 2021];
+
+years.forEach(function(year) {
+  var maps = loadAGB(year);
+
+  var agb_pred = maps.pred.updateMask(forestMask);
+  var agb_ref = maps.ref.updateMask(forestMask);
+
+  var agb_pred_bin = agb_pred.gt(60).rename('agb_pred_bin');
+  var agb_ref_bin = agb_ref.gt(60).rename('agb_ref_bin');
+
+  var diff = agb_pred.subtract(agb_ref).rename('AGB_diff_' + year);
+  Map.addLayer(diff, {min: -100, max: 100, palette: ['red', 'white', 'green']}, 'Rozdíl AGB ' + year);
+
+  // Stats
+  var joined = agb_pred.addBands(agb_ref)
+    .addBands(agb_pred_bin)
+    .addBands(agb_ref_bin)
+    .sample({
+      region: region,
+      scale: 100,
+      numPixels: 5000,
+      seed: 42,
+      geometries: true
+    });
+    
+  joined.size().evaluate(function(val) {
+  print('Number of validation points for the year ' + year + ':', val);
+});
+
+  var withMatch = joined.map(function(f) {
+    var pred_bin = f.get('agb_pred_bin');
+    var ref_bin = f.get('agb_ref_bin');
+    var match = ee.Number(pred_bin).eq(ref_bin);
+    return f.set('match', match);
+  });
+
+  var TP = withMatch.filter(ee.Filter.and(
+    ee.Filter.eq('agb_pred_bin', 1),
+    ee.Filter.eq('agb_ref_bin', 1)
+  )).size();
+
+  var TN = withMatch.filter(ee.Filter.and(
+    ee.Filter.eq('agb_pred_bin', 0),
+    ee.Filter.eq('agb_ref_bin', 0)
+  )).size();
+
+  var FP = withMatch.filter(ee.Filter.and(
+    ee.Filter.eq('agb_pred_bin', 1),
+    ee.Filter.eq('agb_ref_bin', 0)
+  )).size();
+
+  var FN = withMatch.filter(ee.Filter.and(
+    ee.Filter.eq('agb_pred_bin', 0),
+    ee.Filter.eq('agb_ref_bin', 1)
+  )).size();
+
+  var total = withMatch.size();
+  var correct = withMatch.filter(ee.Filter.eq('match', 1)).size();
+
+  var precision = TP.divide(TP.add(FP)).multiply(100);
+  var recall = TP.divide(TP.add(FN)).multiply(100);
+  var f1 = precision.multiply(recall).multiply(2).divide(precision.add(recall));
+  var accuracy = correct.divide(total).multiply(100);
+
+  accuracy.evaluate(function(val) {
+    print('Accuracy ' + year + ':', val);
+  });
+  precision.evaluate(function(val) {
+    print('Precision ' + year + ':', val);
+  });
+  recall.evaluate(function(val) {
+    print('Recall ' + year + ':', val);
+  });
+  f1.evaluate(function(val) {
+    print('F1 Score ' + year + ':', val);
+  });
+});
