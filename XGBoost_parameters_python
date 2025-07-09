@@ -1,88 +1,129 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import KFold
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import itertools
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, make_scorer
+import shap
+import rasterio
 import matplotlib.pyplot as plt
 
-# Training data
+# training data
 df = pd.read_csv("C:\\Users\\lucip\\Desktop\\diplomová práce\\vysledky\\agb_corine_onehot\\AGB_training_all_epsg25833.csv")
 
-# Predictors selection
-features = ['NDVI', 'NDVI705', 'MSI', 'SAVI', 'elevation', 'slope',
-            'forest_type_2018_1', 'forest_type_2018_2', 'forest_type_2018_3']
+# selected predictors
+features = ['NDVI', 'NDVI705', 'MSI', 'elevation', 'slope','forest_type_2018_1', 'forest_type_2018_2', 'forest_type_2018_3']
 target = 'AGB'
 
-
+# removing NaN
 df = df.dropna(subset=features + [target])
+
+
+# x and y definition
 X = df[features].astype(float)
 y = df[target]
 
-# Parameters for model
-param_grid = {
-    'n_estimators': [100, 300],
-    'max_depth': [3, 4, 6],
-    'learning_rate': [0.03, 0.1],
-    'subsample': [0.7, 1],
-    'colsample_bytree': [0.7, 1]
-}
+X = X.astype(float)
 
-# Combination of parameters
-param_combinations = list(itertools.product(*param_grid.values()))
-param_names = list(param_grid.keys())
-
-results = []
+# cross-validation (5-fold)
+model = xgb.XGBRegressor(
+    n_estimators=300,
+    max_depth=3,
+    learning_rate=0.03,
+    subsample=1.0,
+    colsample_bytree=0.7,
+    random_state=42
+)
 kfold = KFold(n_splits=5, shuffle=True, random_state=42)
 
-for i, values in enumerate(param_combinations):
-    params = dict(zip(param_names, values))
-    model = xgb.XGBRegressor(**params, random_state=42, verbosity=0)
+neg_mse = cross_val_score(model, X, y, scoring=make_scorer(mean_squared_error, greater_is_better=False), cv=kfold)
+rmse_scores = np.sqrt(-neg_mse)
+mae_scores = -cross_val_score(model, X, y, scoring='neg_mean_absolute_error', cv=kfold)
+r2_scores = cross_val_score(model, X, y, scoring='r2', cv=kfold)
 
-    rmse_scores, mae_scores, r2_scores = [], [], []
+# statistics
+print(f"cross-validation (5-fold):")
+print(f"  RMSE: {rmse_scores.mean():.2f}")
+print(f"  MAE: {mae_scores.mean():.2f}")
+print(f"  R²: {r2_scores.mean():.3f}")
 
-    for train_idx, val_idx in kfold.split(X):
-        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_val)
-
-        rmse_scores.append(np.sqrt(mean_squared_error(y_val, y_pred)))
-        mae_scores.append(mean_absolute_error(y_val, y_pred))
-        r2_scores.append(r2_score(y_val, y_pred))
-
-    results.append({
-        'Model_ID': f'M{i+1}',
-        'RMSE': np.mean(rmse_scores),
-        'MAE': np.mean(mae_scores),
-        'R2': np.mean(r2_scores),
-        **params  
-    })
-
-# Results
-results_df = pd.DataFrame(results).sort_values(by='R2', ascending=False)
-
-# Top models
-print("TOP 10 modelů s parametry:")
-print(results_df.head(10)[['Model_ID', 'RMSE', 'MAE', 'R2',
-                           'n_estimators', 'max_depth', 'learning_rate',
-                           'subsample', 'colsample_bytree']])
-
-
-top = results_df.head(10)
-labels = top['Model_ID']
-x = np.arange(len(labels))
-width = 0.25
-
-fig, ax = plt.subplots(figsize=(12, 6))
-ax.bar(x - width, top['RMSE'], width, label='RMSE')
-ax.bar(x, top['MAE'], width, label='MAE', color="orange")
-ax.bar(x + width, top['R2'], width, label='R²', color="green")
-ax.set_xticks(x)
-ax.set_xticklabels(labels)
-ax.set_title("Porovnání XGBoost modelů (TOP 10)")
-ax.set_ylabel("Score")
-ax.legend()
+# statistics visualization
+fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+ax[0].bar(range(1, 6), rmse_scores)
+ax[0].set_title("RMSE per fold")
+ax[1].bar(range(1, 6), mae_scores, color="orange")
+ax[1].set_title("MAE per fold")
+ax[2].bar(range(1, 6), r2_scores, color="green")
+ax[2].set_title("R² per fold")
 plt.tight_layout()
 plt.show()
+
+# training and testing
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+model.fit(X_train, y_train)
+y_pred = model.predict(X_test)
+
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+r2 = r2_score(y_test, y_pred)
+print(f"testing:")
+print(f"  RMSE: {rmse:.2f}")
+print(f"  R²: {r2:.3f}")
+
+# SHAP analysis
+explainer = shap.Explainer(model, X_train)
+shap_values = explainer(X_test)
+
+shap.summary_plot(shap_values, X_test, plot_type="bar")
+shap.summary_plot(shap_values, X_test)
+
+shap_abs = np.abs(shap_values.values)
+mean_shap = np.mean(shap_abs, axis=0)
+shap_importance = pd.Series(mean_shap, index=X_test.columns).sort_values(ascending=False)
+print("SHAP importance (mean(|SHAP|)):")
+print(shap_importance.round(4))
+
+shap_weights = shap_importance / shap_importance.sum()
+print("Normalized SHAP weights:")
+for var, weight in shap_weights.items():
+    print(f"{var}: {weight:.4f}")
+
+# normalized importance from XGBoost
+importances = model.get_booster().get_score(importance_type='gain')
+total = sum(importances.values())
+weights = {k: v / total for k, v in importances.items()}
+print("Normalized weights:")
+for feature, weight in weights.items():
+    print(f"{feature}: {weight:.4f}")
+
+'''
+
+# AGB estimate maps
+years = [2018, 2019, 2020, 2021]
+tif_paths = {
+
+    2018: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2018_all.tif",
+    2019: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2019_all.tif",
+    2020: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2020_all.tif",
+    2021: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2021_all.tif"
+}
+
+def create_agb_map(tif_path, year):
+    with rasterio.open(tif_path) as src:
+        stack = src.read()
+        profile = src.profile
+    bands, rows, cols = stack.shape
+    reshaped = stack.reshape(bands, -1).T
+    valid_mask = ~np.isnan(reshaped).any(axis=1)
+    preds = model.predict(reshaped[valid_mask])
+    agb_map = np.full((rows * cols), np.nan, dtype=np.float32)
+    agb_map[valid_mask] = preds
+    agb_map = agb_map.reshape(rows, cols)
+    profile.update(dtype=rasterio.float32, count=1, compress='lzw')
+    out_path = f"C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/AGB_prediction_{year}.tif"
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(agb_map.astype(rasterio.float32), 1)
+    print(f"Uložena mapa pro rok {year}: {out_path}")
+
+for year in years:
+    create_agb_map(tif_paths[year], year)
+
+'''
