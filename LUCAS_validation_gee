@@ -5,7 +5,7 @@
 // CZ
 var cz = ee.FeatureCollection('projects/tidy-forest-404511/assets/hranice_cr');
 
-/*
+
 // 2. CORINE 2018 
 var corine = ee.Image('COPERNICUS/CORINE/V20/100m/2018')
   .select('landcover')
@@ -13,7 +13,7 @@ var corine = ee.Image('COPERNICUS/CORINE/V20/100m/2018')
 var forestMask = corine.eq(311).or(corine.eq(312)).or(corine.eq(313)).rename('forest_mask');
 
 
-
+/*
 // 3. High Resolution Layer Tree Cover and Forests 
 var corine = ee.Image("projects/tidy-forest-404511/assets/HE_2018_100m_utm")
   .clip(cz);  
@@ -21,7 +21,7 @@ var corine = ee.Image("projects/tidy-forest-404511/assets/HE_2018_100m_utm")
 // Forest mask 1 and 2 categories
 var forestMask = corine.eq(1).or(corine.eq(2)).rename('forest_mask');
 */
-
+/*
 // Dynamic world  
 var year = 2018;
 
@@ -34,7 +34,7 @@ var visParams = {
 // Creating a collection for the period May–October
 var seasonalCollection = [];
 
-for (var m = 5; m <= 10; m++) {
+for (var m = 6; m <= 9; m++) {
   var start = ee.Date.fromYMD(year, m, 1);
   var end = start.advance(1, 'month');
 
@@ -56,9 +56,9 @@ var forestMask = seasonalMean.gte(0.5).rename('forest_mask');;
 Map.addLayer(
   forestMask.updateMask(forestMask),
   {palette: ['white', 'darkgreen']},
-  'Průměrný les (květen–říjen ' + year + ')'
+  'Průměrný les (červen–září ' + year + ')'
 );  
-
+*/
   
   
 
