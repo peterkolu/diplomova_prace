@@ -250,6 +250,12 @@ var forestType2018 = clc2018
   .where(clc2018.eq(312), 2)  // broadleaf
   .where(clc2018.eq(313), 3)  // mixed
   .rename('forest_type_2018');
+  
+var forest_type_score = clc2018
+  .where(clc2018.eq(311), 0)
+  .where(clc2018.eq(312), 1)
+  .where(clc2018.eq(313), 0.5)
+  .rename('forest_type_score');
 
 //  Sentinel-2 bands to use
 var s2bands = ['B2', 'B3', 'B4', 'B5', 'B7', 'B8', 'B11'];
@@ -321,6 +327,7 @@ var predictors = s2.select(['NDVI', 'NDVI705', 'MSI'])
   .addBands(forestType1)
   .addBands(forestType2)
   .addBands(forestType3)
+  .addBands(forest_type_score)
 
   .reproject({crs: proj, scale: 100});
 
@@ -394,6 +401,7 @@ function exportIndices(year, startDate, endDate, maskFunction, cloudThreshold) {
     .addBands(forestType1)
     .addBands(forestType2)
     .addBands(forestType3)
+    .addBands(forest_type_score)
     .toFloat();
 
   Export.image.toDrive({
@@ -411,7 +419,46 @@ function exportIndices(year, startDate, endDate, maskFunction, cloudThreshold) {
 }
 
 
-exportIndices(2018, '2018-05-01', '2018-09-30', maskS2clouds, 5);
-exportIndices(2019, '2019-05-01', '2019-09-30', maskS2clouds, 5);
-exportIndices(2020, '2020-05-01', '2020-09-30', maskS2clouds, 5);
-exportIndices(2021, '2021-05-01', '2021-09-30', maskS2SCL, 10);
+exportIndices(2018, '2018-05-01', '2018-09-30', maskS2SCL, 20);
+exportIndices(2019, '2019-05-01', '2019-09-30', maskS2SCL, 20);
+exportIndices(2020, '2020-05-01', '2020-09-30', maskS2SCL, 20);
+exportIndices(2021, '2021-05-01', '2021-09-30', maskS2SCL, 50);
+
+function exportIndices1(year, startDate, endDate, maskFunction, cloudThreshold) {
+  var collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterDate(startDate, endDate)
+    .filterBounds(region)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloudThreshold)) 
+    .map(maskFunction)
+    .map(function(img) { return img.select(['B2', 'B3', 'B4', 'B5', 'B7', 'B8', 'B11']); })
+    .map(addIndices);
+
+  var image = ee.Image(collection.median()).clip(region);
+
+  var predictors = image.select(['NDVI', 'NDVI705', 'MSI'])
+    .addBands(elevation)
+    .addBands(slope)
+    .addBands(forestType1)
+    .addBands(forestType2)
+    .addBands(forestType3)
+    .addBands(forest_type_score)
+    .toFloat();
+
+  Export.image.toDrive({
+    image: predictors,
+    description: 'predictors_' + year + '_all',
+    folder: 'GEE_exports',
+    fileNamePrefix: 'predictors_' + year + '_all',
+    region: region.geometry(),
+    scale: 100,
+    crs: 'EPSG:25833',
+    maxPixels: 1e13
+  });
+
+  Map.addLayer(image, {bands: ['B4', 'B3', 'B2'], min: 0, max: 3000}, 'S2 RGB ' + year);
+}
+
+exportIndices1(2022, '2022-05-01', '2022-09-30', maskS2SCL, 50);
+exportIndices1(2023, '2023-05-01', '2023-09-30', maskS2SCL, 20);
+exportIndices1(2024, '2024-05-01', '2024-09-30', maskS2SCL, 20);
+
