@@ -19,7 +19,7 @@ var emissionLegendPanel = null;
 var forestTypeLayer = null;
 
 
-var header = ui.Label('Analýza množství uhlíku v lesích České republiky', {
+var header = ui.Label('Analýza uhlíku v lesích ČR', {
   fontSize: '20px',
   fontWeight: 'bold',
   color: 'green',
@@ -27,8 +27,8 @@ var header = ui.Label('Analýza množství uhlíku v lesích České republiky',
 });
 
 var intro = ui.Label(
-  'Tato aplikace zobrazuje množství uhlíku v lesní nadzemní (AGB) a podzemní (BGB) biomase v České republice pomocí výsledků modelování (AGB predikce), emisí CO₂ z lesů, metodiky IPCC Tier 1. Součástí je také lokální analýza změřená na úbytek uhlíku po požáru v Českém Švýcarsku. Více informací je k dispozici u jednotlivých analýz',
-  {fontSize: '14px', margin: '0 0 8px 0'}
+  'Aplikace zobrazuje výsledky modelování nadzemní biomasy (AGB) v lesích ČR. Z AGB se analyzuje množství uhlíku a emise CO₂. Aplikace je doplněna o lokální analýzu uhlíku v lesích před a po požáru v NP České Švýcarsko a o analýzu uhlíku v lesích dle metody IPCC tier 1.',
+  {fontSize: '14px', margin: '0 0 8px 0', whiteSpace: 'pre-wrap', textAlign: 'justify'}
 );
 
 function separator() {
@@ -44,7 +44,7 @@ var resultsPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical', true)});
 var modeLabel = ui.Label('Zvolte typ analýzy:');
 
 var yearSelect = ui.Select({
-  items: ['2018', '2019', '2020', '2021'],
+  items: ['2018', '2019', '2020', '2021', '2022', '2023', '2024'],
   style: {margin: '6px 0'},
   onChange: function(value) {
     updateCarbonLayers(value);
@@ -53,7 +53,12 @@ var yearSelect = ui.Select({
 yearSelect.style().set('shown', false);
 
 var diffSelect = ui.Select({
-  items: ['2018-2019', '2018-2020', '2018-2021', '2019-2020', '2019-2021', '2020-2021'],
+  items: ['2018-2019', '2018-2020', '2018-2021', '2018-2022', '2018-2023', '2018-2024',
+    '2019-2020', '2019-2021', '2019-2022', '2019-2023', '2019-2024',
+    '2020-2021', '2020-2022', '2020-2023', '2020-2024',
+    '2021-2022', '2021-2023', '2021-2024',
+    '2022-2023', '2022-2024',
+    '2023-2024'],
   style: {margin: '6px 0'},
   onChange: function(value) {
     var years = value.split('-');
@@ -93,31 +98,7 @@ var vyberRok = ui.Select({
 vyberRok.style().set('shown', false);
 var activeMode = null;
 
- var selectManualRok = ui.Select({
-      items: ['2017', '2018', '2019', '2020', '2021', '2022', '2023', '2024'],
-      placeholder: 'Vyberte rok',
-      style: {shown: false, margin: '6px 0'}
-    });
-
- var selectModel = ui.Select({
-      items: [
-        'Spektrální indexy + topografie',
-        'Spektrální indexy',
-      ],
-      placeholder: 'Zvolte model výpočtu AGB',
-      style: {shown: false, margin: '6px 0'}
-    });
-
-function trySpustitManualniAnalyzu() {
-  var rok = selectManualRok.getValue();
-  var model = selectModel.getValue();
-  if (rok && model) {
-    spustitManualniAnalyzu(rok, model);
-  }
-}
-
-selectManualRok.onChange(trySpustitManualniAnalyzu);
-selectModel.onChange(trySpustitManualniAnalyzu);
+ 
 
 // Funkce pro zvýraznění aktivního tlačítka
 function highlightActiveButton(active) {
@@ -132,7 +113,7 @@ function highlightActiveButton(active) {
 
 // Definice tlačítek pro spuštění analýz
 var carbonButton = ui.Button({
-  label: 'Analýza uhlíku',
+  label: 'Analýza množství uhlíku',
   style: {stretch: 'horizontal', margin: '6px 0'},
   onClick: function() {
     if (activeMode !== 'carbon') {
@@ -191,7 +172,7 @@ var emissionsButton = ui.Button({
 });
 
 var ipccButton = ui.Button({
-  label: 'IPCC Analýza dle rozlohy',
+  label: 'IPCC analýza dle rozlohy',
   style: {stretch: 'horizontal', margin: '6px 0'},
   onClick: function() {
     if (activeMode !== 'ipcc') {
@@ -234,7 +215,7 @@ function updateDatasetList(rok) {
   if (['1990', '2000', '2006', '2012', '2018'].indexOf(rok) !== -1) dostupne.push('CORINE');
   if (['2020', '2021'].indexOf(rok) !== -1) dostupne.push('ESA');
   if (rok === '2020') dostupne.push('JRC');
-  if (['2012', '2015', '2018'].indexOf(rok) !== -1) dostupne.push('HR Copernicus');
+  if (['2012', '2015', '2018', '2021'].indexOf(rok) !== -1) dostupne.push('HR Copernicus');
   if (['2021', '2022', '2023', '2024'].indexOf(rok) !== -1) dostupne.push('Dynamic World');
   if (rok === '2000') dostupne.push('Hansen GFC');
   if (['2017', '2018', '2019', '2020', '2021', '2022', '2023', '2024'].indexOf(rok) !== -1) dostupne.push('Paluba RF');
@@ -469,11 +450,11 @@ function createForestLegend() {
   });
 
   forestLegendPanel.add(ui.Label({
-    value: 'Legenda typu lesa',
+    value: 'Kategorie lesa',
     style: {fontWeight: 'bold', fontSize: '13px', margin: '0 0 6px 0'}
   }));
 
-  var lesBarvy = ['#006400', '#228B22', '#7CFC00'];  // Jehličnaté, Smíšené, Listnaté
+  var lesBarvy = ['006400', '228B22', '7CFC00'];  // Jehličnaté, Smíšené, Listnaté
   var lesPopisky = ['Jehličnaté', 'Smíšené', 'Listnaté'];
 
   for (var j = 0; j < lesBarvy.length; j++) {
@@ -565,7 +546,10 @@ var agbMaps = {
   '2018': ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_2018_etrs'),
   '2019': ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_2019_etrs'),
   '2020': ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_2020_etrs'),
-  '2021': ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_2021_etrs')
+  '2021': ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_2021_etrs'),
+  '2022': ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_2022_etrs'),
+  '2023': ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_2023_etrs'),
+  '2024': ee.Image('projects/tidy-forest-404511/assets/AGB_prediction_2024_etrs')
 };
 
 function updateCarbonLayers(year) {
@@ -732,7 +716,7 @@ function updateCarbonLayers(year) {
 
   forestTypeLayer = ui.Map.Layer(forestTypeMask, {
   min: 1, max: 3,
-  palette: ['#7CFC00', '#006400', '#228B22'],
+  palette: ['7CFC00', '006400', '228B22'],
   }, 'Typ lesa (CORINE 2018)', false);
 
   mapPanel.layers().add(forestTypeLayer);
@@ -834,7 +818,7 @@ function updateEmissionLayers(startYear, endYear) {
     
   mapPanel.addLayer(forestTypeMask, {
     min: 1, max: 3,
-    palette: ['#7CFC00', '#006400', '#228B22'],
+    palette: ['7CFC00', '006400', '228B22'],
 
   }, 'Typ lesa (CORINE 2018)', false);  
 
@@ -857,7 +841,7 @@ function updateEmissionLayers(startYear, endYear) {
   });
 
   legendPanel.add(ui.Label({
-    value: 'Legenda emisí [t CO₂/ha]:',
+    value: 'Emise [t CO₂/ha]:',
     style: {fontWeight: 'bold', fontSize: '13px'}
   }));
 
@@ -898,16 +882,16 @@ function updateEmissionLayers(startYear, endYear) {
 }).get('co2_emission').evaluate(function(val) {
   resultsPanel.clear();  // Vyčištění před výpisem
 
-  resultsPanel.add(ui.Label('Emise CO₂ v období ' + startYear + '–' + endYear + ':', {
+  resultsPanel.add(ui.Label(' CO₂ v období ' + startYear + '–' + endYear + '(- = ukládání, + = emise):', {
     fontWeight: 'bold',
     fontSize: '14px',
     margin: '0 0 6px 0'
   }));
 
   if (val !== null) {
-    resultsPanel.add(ui.Label('Celkové emise CO₂: ' + (val / 1e6).toFixed(2) + ' Mt'));
+    resultsPanel.add(ui.Label( + (val / 1e6).toFixed(2) + ' Mt'));
   } else {
-    resultsPanel.add(ui.Label('Celkové emise CO₂: N/A'));
+    resultsPanel.add(ui.Label('Celkové CO₂: N/A'));
   }
 });
   
@@ -960,9 +944,9 @@ if (datasetName === 'CORINE') {
     {mask: f312, agb: AGB_312, cf: CF[2], bf: BF[2], label: 'Jehličnaté'},
     {mask: f313, agb: AGB_313, cf: CF[3], bf: BF[3], label: 'Smíšené'}
   ];
-  mapPanel.addLayer(f311, {palette: '#7CFC00'}, 'Listnaté');
-  mapPanel.addLayer(f312, {palette: '#006400'}, 'Jehličnaté');
-  mapPanel.addLayer(f313, {palette: '#228B22'}, 'Smíšené');
+  mapPanel.addLayer(f311, {palette: '7CFC00'}, 'Listnaté');
+  mapPanel.addLayer(f312, {palette: '006400'}, 'Jehličnaté');
+  mapPanel.addLayer(f313, {palette: '228B22'}, 'Smíšené');
 } else {
   var avgAGB = (AGB_311 + AGB_312 + AGB_313) / 3;
 
@@ -997,21 +981,31 @@ if (datasetName === 'CORINE') {
       {mask: f20, agb: avgAGB, cf: CF[3], bf: BF[3], label: 'JRC - Plantation'}
     ];
   } else if (datasetName === 'HR Copernicus') {
-    var hrAssets = {
-      '2012': 'FTY_2012_020m_eu_03035_d02_full',
-      '2015': 'FTY_2015_020m_eu_03035_d04_full',
-      '2018': 'fty_2018_1'
-    };
-    var hr = ee.Image('projects/tidy-forest-404511/assets/' + hrAssets[rok])
-      .gt(0).selfMask().clip(region);
-    mapPanel.addLayer(hr, {palette: '228B22'}, 'HR Copernicus ' + rok);
-    forest = [{
-      mask: hr,
-      agb: avgAGB,
-      cf: CF[3],
-      bf: BF[3],
-      label: 'HR Copernicus (' + rok + ')'
-    }];
+  var hrAssets = {
+    '2012': 'FTY_2012_020m_eu_03035_d02_full',
+    '2015': 'FTY_2015_020m_eu_03035_d04_full',
+    '2018': 'fty_2018_1',
+    '2021': 'HE_2021_10m'
+  };
+
+  var hr = ee.Image('projects/tidy-forest-404511/assets/' + hrAssets[rok])
+    .clip(region);
+
+  // Typy lesa podle hodnot
+  var hr_listn = hr.eq(1).selfMask();  // Listnaté
+  var hr_jehlic = hr.eq(2).selfMask();  // Jehličnaté
+
+  // Nepočítáme smíšené lesy vůbec – ani je neextrahujeme
+
+  mapPanel.addLayer(hr_listn, {palette: '7CFC00'}, 'HR Listnaté ' + rok);
+  mapPanel.addLayer(hr_jehlic, {palette: '006400'}, 'HR Jehličnaté ' + rok);
+
+  forest = [
+    {mask: hr_listn, agb: AGB_311, cf: CF[1], bf: BF[1], label: 'Listnaté'},
+    {mask: hr_jehlic, agb: AGB_312, cf: CF[2], bf: BF[2], label: 'Jehličnaté'}
+  ];
+
+
   } else if (datasetName === 'Dynamic World') {
     var year = parseInt(rok);
     var dw = ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1")
@@ -1096,15 +1090,15 @@ if (datasetName === 'CORINE') {
   }
 });
   forestLegendPanel.add(ui.Label({
-    value: 'Legenda typu lesa',
+    value: 'Kategorie lesa',
     style: {fontWeight: 'bold'}
   }));
 
   // Definice barev
   var barvy = {
-    'Listnaté': '#7CFC00',
-    'Jehličnaté': '#006400',
-    'Smíšené': '#228B22',
+    'Listnaté': '7CFC00',
+    'Jehličnaté': '006400',
+    'Smíšené': '228B22',
     'JRC - Naturally regenerating': '006400',
     'JRC - Primary': '228B22',
     'JRC - Plantation': '32CD32',
@@ -1351,7 +1345,7 @@ if (datumy[vybranyRok]) {
   var slope = ee.Terrain.slope(ee.Image("USGS/SRTMGL1_003")).rename('slope');
   var elevation = ee.Image("USGS/SRTMGL1_003").rename('elevation');
 
-  // Rovnice pro AGB s normalizovanými SHAP váhami a regresními koeficienty
+  // Aktualizovaná rovnice pro AGB s normalizovanými SHAP váhami a regresními koeficienty
   var weightedSum = ndvi.multiply(0.1011)
     .add(ndvi705.multiply(0.1137))
     .add(msi.multiply(0.1486))
@@ -1429,3 +1423,4 @@ if (datumy[vybranyRok]) {
     });
   }
 }
+
