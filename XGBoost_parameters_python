@@ -24,7 +24,7 @@ y = df[target]
 
 X = X.astype(float)
 
-# cross-validation (5-fold)
+
 model = xgb.XGBRegressor(
     n_estimators=300,
     max_depth=3,
@@ -64,9 +64,13 @@ y_pred = model.predict(X_test)
 
 rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 r2 = r2_score(y_test, y_pred)
+me = np.mean(y_pred - y_test)
+mae = mean_absolute_error(y_test, y_pred)
 print(f"testing:")
 print(f"  RMSE: {rmse:.2f}")
+print(f"  MAE: {mae:.2f}")
 print(f"  R²: {r2:.3f}")
+print(f"  ME: {me:.2f}")
 
 # SHAP analysis
 explainer = shap.Explainer(model, X_train)
@@ -86,6 +90,60 @@ print("Normalized SHAP weights:")
 for var, weight in shap_weights.items():
     print(f"{var}: {weight:.4f}")
 
+# SHAP plots
+def plot_shap_dependence(ax, feature_name):
+    shap_vals = shap_values.values[:, X_test.columns.get_loc(feature_name)]
+    feature_vals = X_test[feature_name]
+    
+    sc = ax.scatter(feature_vals, shap_vals, alpha=0.5, s=20, c=feature_vals, cmap='coolwarm')
+    ax.axhline(0, color='gray', linestyle='--')
+    ax.set_xlabel(f"{feature_name}")
+    ax.set_ylabel("SHAP value")
+    ax.set_title(f"{feature_name}")
+    ax.grid(True)
+    
+    
+    df_temp = pd.DataFrame({
+        'feature_value': feature_vals,
+        'shap_value': shap_vals
+    }).sort_values('feature_value')
+    
+    sign_change = df_temp['shap_value'].ge(0).astype(int).diff().abs()
+    thresholds = df_temp.loc[sign_change == 1, 'feature_value']
+    
+    if not thresholds.empty:
+        print(f"Hranice pro {feature_name} (změna znaménka SHAP):")
+        for val in thresholds:
+            print(f"  přibližně {val:.2f}")
+    else:
+        print(f"{feature_name}: žádný přechod SHAP hodnoty přes nulu")
+
+    return sc
+
+
+features_to_plot = ["slope", "elevation", "NDVI", "NDVI705", "MSI"]
+
+
+n_cols = 2
+n_rows = int(np.ceil(len(features_to_plot) / n_cols))
+
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 5 * n_rows))
+axes = axes.flatten()
+
+
+for i, feature in enumerate(features_to_plot):
+    sc = plot_shap_dependence(axes[i], feature)
+
+
+for j in range(len(features_to_plot), len(axes)):
+    fig.delaxes(axes[j])
+
+fig.tight_layout()
+plt.colorbar(sc, ax=axes, orientation='vertical', fraction=0.02, pad=0.04, label='Hodnota prediktoru')
+plt.show()
+
+
+
 # normalized importance from XGBoost
 importances = model.get_booster().get_score(importance_type='gain')
 total = sum(importances.values())
@@ -94,16 +152,19 @@ print("Normalized weights:")
 for feature, weight in weights.items():
     print(f"{feature}: {weight:.4f}")
 
-'''
 
+'''
 # AGB estimate maps
-years = [2018, 2019, 2020, 2021]
+years = [2018, 2019, 2020, 2021, 2022, 2023, 2024]
 tif_paths = {
 
     2018: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2018_all.tif",
     2019: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2019_all.tif",
     2020: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2020_all.tif",
-    2021: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2021_all.tif"
+    2021: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2021_all.tif",
+    2022: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2022_all.tif",
+    2023: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2023_all.tif",
+    2024: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2024_all.tif"
 }
 
 def create_agb_map(tif_path, year):
