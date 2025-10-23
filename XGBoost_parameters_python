@@ -1,190 +1,315 @@
-import pandas as pd
+# -*- coding: utf-8 -*-
+"""
+This script trains an XGBoost regression model to predict above-ground biomass (AGB)
+from remote sensing and terrain predictors. It loads a training CSV, selects the
+feature set based on the chosen mode (Sentinel-2 or Landsat), performs 5-fold
+cross-validation and a hold-out test, saves the fitted model, and produces basic
+feature importance and SHAP plots. Finally, it applies the trained model to yearly
+predictor GeoTIFF stacks and writes AGB prediction rasters at 100 m resolution.
+
+Inputs:
+  1) A CSV with columns: AGB and the selected predictors.
+  2) A base folder with yearly GeoTIFF predictor stacks (100 m, EPSG:25833).
+  3) Mode flag: "S2" expects NDVI705, "LS" does not.
+  4) List of years to export prediction maps.
+
+Outputs:
+  1) Trained model saved as joblib.
+  2) CV and hold-out metrics printed to console.
+  3) Optional feature importance and SHAP plots.
+  4) A GeoTIFF AGB map per year written to the base folder.
+"""
+
+import os
 import numpy as np
+import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import train_test_split, cross_val_score, KFold
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, make_scorer
+from sklearn.model_selection import KFold, train_test_split
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import matplotlib.pyplot as plt
 import shap
 import rasterio
-import matplotlib.pyplot as plt
+from joblib import dump
 
-# training data
-df = pd.read_csv("C:\\Users\\lucip\\Desktop\\diplomová práce\\vysledky\\agb_corine_onehot\\AGB_training_all_epsg25833.csv")
+# ============================ 1) INPUTS ============================
 
-# selected predictors
-features = ['NDVI', 'NDVI705', 'MSI', 'elevation', 'slope','forest_type_2018_1', 'forest_type_2018_2', 'forest_type_2018_3']
-target = 'AGB'
+# Training table. Columns must include AGB and predictors for the chosen MODE.
+CSV_PATH = r"C:\Users\lucip\Desktop\diplomová práce\forest_dynamic_HR\AGB_samples_S2_2018_frac.csv"
 
-# removing NaN
-df = df.dropna(subset=features + [target])
+# Prediction mode. Use 'S2' when NDVI705 is available, otherwise use 'LS'.
+MODE = 'S2'   # or 'LS'
 
+# Base folder containing predictor rasters to be scored.
+BASE_DIR = r"C:\Users\lucip\Desktop\diplomová práce\forest_dynamic_HR"
 
-# x and y definition
-X = df[features].astype(float)
-y = df[target]
+# Years to produce prediction maps for.
+YEARS = [2018, 2019, 2020, 2021, 2022, 2023, 2024]
 
-X = X.astype(float)
+# ============================ 2) FEATURES ============================
 
+if MODE == 'S2':
+    FEATURES = ['NDVI', 'MSI', 'NDVI705', 'elevation', 'slope',
+                'broadleaf_share', 'conifer_share']
+else:
+    FEATURES = ['NDVI', 'MSI', 'elevation', 'slope',
+                'broadleaf_share', 'conifer_share']
 
-model = xgb.XGBRegressor(
-    n_estimators=300,
-    max_depth=3,
-    learning_rate=0.03,
-    subsample=1.0,
-    colsample_bytree=0.7,
+TARGET = 'AGB'
+print(f"Mode: {MODE} | FEATURES: {FEATURES}")
+
+# ============================ 3) DATA ============================
+
+# Read CSV and normalize column names
+df = pd.read_csv(CSV_PATH)
+df.columns = df.columns.str.strip()
+
+# Check that all required columns exist
+missing = [c for c in (FEATURES + [TARGET]) if c not in df.columns]
+if missing:
+    raise ValueError(
+        f"Missing columns in CSV: {missing}\n"
+        f"Available columns: {list(df.columns)}"
+    )
+
+# Drop NaNs only in used columns
+df = df.dropna(subset=FEATURES + [TARGET]).copy()
+
+X = df[FEATURES].astype(float)
+y = df[TARGET].astype(float)
+
+print("Data shape:", X.shape, "(n_samples, n_features)")
+print("Columns:", list(X.columns))
+
+# ============================ 4) MODEL ============================
+
+print("XGBoost version:", xgb.__version__)
+
+MODEL_PARAMS = dict(
+    n_estimators=1000,
+    learning_rate=0.05,
+    max_depth=6,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_lambda=1.0,
+    objective='reg:squarederror',
+    n_jobs=-1,
+    eval_metric='rmse',
+    tree_method='hist',
     random_state=42
 )
-kfold = KFold(n_splits=5, shuffle=True, random_state=42)
 
-neg_mse = cross_val_score(model, X, y, scoring=make_scorer(mean_squared_error, greater_is_better=False), cv=kfold)
-rmse_scores = np.sqrt(-neg_mse)
-mae_scores = -cross_val_score(model, X, y, scoring='neg_mean_absolute_error', cv=kfold)
-r2_scores = cross_val_score(model, X, y, scoring='r2', cv=kfold)
-
-# statistics
-print(f"cross-validation (5-fold):")
-print(f"  RMSE: {rmse_scores.mean():.2f}")
-print(f"  MAE: {mae_scores.mean():.2f}")
-print(f"  R²: {r2_scores.mean():.3f}")
-
-# statistics visualization
-fig, ax = plt.subplots(1, 3, figsize=(15, 4))
-ax[0].bar(range(1, 6), rmse_scores)
-ax[0].set_title("RMSE per fold")
-ax[1].bar(range(1, 6), mae_scores, color="orange")
-ax[1].set_title("MAE per fold")
-ax[2].bar(range(1, 6), r2_scores, color="green")
-ax[2].set_title("R² per fold")
-plt.tight_layout()
-plt.show()
-
-# training and testing
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-model.fit(X_train, y_train)
-y_pred = model.predict(X_test)
-
-rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-r2 = r2_score(y_test, y_pred)
-me = np.mean(y_pred - y_test)
-mae = mean_absolute_error(y_test, y_pred)
-print(f"testing:")
-print(f"  RMSE: {rmse:.2f}")
-print(f"  MAE: {mae:.2f}")
-print(f"  R²: {r2:.3f}")
-print(f"  ME: {me:.2f}")
-
-# SHAP analysis
-explainer = shap.Explainer(model, X_train)
-shap_values = explainer(X_test)
-
-shap.summary_plot(shap_values, X_test, plot_type="bar")
-shap.summary_plot(shap_values, X_test)
-
-shap_abs = np.abs(shap_values.values)
-mean_shap = np.mean(shap_abs, axis=0)
-shap_importance = pd.Series(mean_shap, index=X_test.columns).sort_values(ascending=False)
-print("SHAP importance (mean(|SHAP|)):")
-print(shap_importance.round(4))
-
-shap_weights = shap_importance / shap_importance.sum()
-print("Normalized SHAP weights:")
-for var, weight in shap_weights.items():
-    print(f"{var}: {weight:.4f}")
-
-# SHAP plots
-def plot_shap_dependence(ax, feature_name):
-    shap_vals = shap_values.values[:, X_test.columns.get_loc(feature_name)]
-    feature_vals = X_test[feature_name]
-    
-    sc = ax.scatter(feature_vals, shap_vals, alpha=0.5, s=20, c=feature_vals, cmap='coolwarm')
-    ax.axhline(0, color='gray', linestyle='--')
-    ax.set_xlabel(f"{feature_name}")
-    ax.set_ylabel("SHAP value")
-    ax.set_title(f"{feature_name}")
-    ax.grid(True)
-    
-    
-    df_temp = pd.DataFrame({
-        'feature_value': feature_vals,
-        'shap_value': shap_vals
-    }).sort_values('feature_value')
-    
-    sign_change = df_temp['shap_value'].ge(0).astype(int).diff().abs()
-    thresholds = df_temp.loc[sign_change == 1, 'feature_value']
-    
-    if not thresholds.empty:
-        print(f"Hranice pro {feature_name} (změna znaménka SHAP):")
-        for val in thresholds:
-            print(f"  přibližně {val:.2f}")
+def fit_xgb_version_safe(est, X_tr, y_tr, X_va=None, y_va=None):
+    """Fit with early stopping where supported by the installed XGBoost."""
+    if X_va is not None and y_va is not None:
+        try:
+            return est.fit(
+                X_tr, y_tr,
+                eval_set=[(X_va, y_va)],
+                verbose=False,
+                callbacks=[xgb.callback.EarlyStopping(rounds=50, save_best=True)]
+            )
+        except TypeError:
+            try:
+                return est.fit(
+                    X_tr, y_tr,
+                    eval_set=[(X_va, y_va)],
+                    eval_metric='rmse',
+                    early_stopping_rounds=50,
+                    verbose=False
+                )
+            except TypeError:
+                return est.fit(X_tr, y_tr, verbose=False)
     else:
-        print(f"{feature_name}: žádný přechod SHAP hodnoty přes nulu")
+        return est.fit(X_tr, y_tr, verbose=False)
 
-    return sc
+# ============================ 5) 5-FOLD CV ============================
 
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+rmse_cv, mae_cv, r2_cv = [], [], []
 
-features_to_plot = ["slope", "elevation", "NDVI", "NDVI705", "MSI"]
+for tr_idx, va_idx in kf.split(X):
+    X_tr, X_va = X.iloc[tr_idx], X.iloc[va_idx]
+    y_tr, y_va = y.iloc[tr_idx], y.iloc[va_idx]
 
+    m = xgb.XGBRegressor(**MODEL_PARAMS)
+    fit_xgb_version_safe(m, X_tr, y_tr, X_va, y_va)
 
-n_cols = 2
-n_rows = int(np.ceil(len(features_to_plot) / n_cols))
+    pred_va = m.predict(X_va)
+    rmse_cv.append(np.sqrt(mean_squared_error(y_va, pred_va)))
+    mae_cv.append(mean_absolute_error(y_va, pred_va))
+    r2_cv.append(r2_score(y_va, pred_va))
 
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 5 * n_rows))
-axes = axes.flatten()
+print("\n5-fold CV:")
+print(f"  RMSE: {np.mean(rmse_cv):.2f} ± {np.std(rmse_cv):.2f}")
+print(f"  MAE : {np.mean(mae_cv):.2f} ± {np.std(mae_cv):.2f}")
+print(f"  R²  : {np.mean(r2_cv):.3f} ± {np.std(r2_cv):.3f}")
 
+# ============================ 6) HOLD-OUT ============================
 
-for i, feature in enumerate(features_to_plot):
-    sc = plot_shap_dependence(axes[i], feature)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.20, random_state=42
+)
 
+model = xgb.XGBRegressor(**MODEL_PARAMS)
+fit_xgb_version_safe(model, X_train, y_train, X_test, y_test)
 
-for j in range(len(features_to_plot), len(axes)):
-    fig.delaxes(axes[j])
+y_pred = model.predict(X_test)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae  = mean_absolute_error(y_test, y_pred)
+r2   = r2_score(y_test, y_pred)
+me   = float(np.mean(y_pred - y_test))
+
+print("\nHold-out test:")
+print(f"  RMSE: {rmse:.2f}")
+print(f"  MAE : {mae:.2f}")
+print(f"  R²  : {r2:.3f}")
+print(f"  ME  : {me:.2f}")
+
+# Save fitted model
+dump(model, f"xgb_agb_{MODE.lower()}_100m.joblib")
+
+# ============================ 7) SHAP AND FEATURE IMPORTANCE (optional) ============================
+
+booster = model.get_booster()
+booster.feature_names = list(X.columns)
+xgb.plot_importance(booster=booster, importance_type='gain', show_values=False)
+plt.title("Feature Importance (XGBoost, gain)")
+plt.tight_layout(); plt.show()
+
+X_shap = X_test.copy()
+if len(X_shap) > 5000:
+    X_shap = X_shap.sample(5000, random_state=42)
+
+try:
+    explainer = shap.TreeExplainer(model)
+    sv = explainer(X_shap)
+    shap_values_array = sv.values if hasattr(sv, "values") else np.array(sv)
+except Exception:
+    explainer = shap.TreeExplainer(model)
+    shap_values_array = explainer.shap_values(X_shap)
+
+shap.summary_plot(shap_values_array, X_shap, plot_type="bar")
+shap.summary_plot(shap_values_array, X_shap)
+
+X_dep = X_shap.copy()
+vals = shap_values_array  # shape (n_samples, n_features)
+
+feat_names = list(X_dep.columns)
+n = len(feat_names)
+n_cols = 3
+n_rows = int(np.ceil(n / n_cols)) if n > 0 else 1
+
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+axes = np.array(axes).reshape(-1)
+
+for i, f in enumerate(feat_names):
+    j = X_dep.columns.get_loc(f)
+    ax = axes[i]
+    ax.scatter(
+        X_dep.iloc[:, j].values,
+        vals[:, j],
+        s=20, alpha=0.6,
+        c=X_dep.iloc[:, j].values, cmap='coolwarm'
+    )
+    ax.axhline(0, color='gray', ls='--', lw=1)
+    ax.set_xlabel(f); ax.set_ylabel("SHAP value"); ax.set_title(f)
+
+# Remove empty panels
+for k in range(i+1, len(axes)):
+    fig.delaxes(axes[k])
 
 fig.tight_layout()
-plt.colorbar(sc, ax=axes, orientation='vertical', fraction=0.02, pad=0.04, label='Hodnota prediktoru')
 plt.show()
 
+# ============================ 8) PREDICTION RASTERS ============================
 
+def candidates_for_year(y, mode):
+    """Return possible file names for the yearly predictor stack. First existing is used."""
+    if mode == 'S2':
+        return [
+            fr"{BASE_DIR}\PredRasters_S2_{y}_100m_EPSG25833.tif",
+        ]
+    else:
+        return [
+            fr"{BASE_DIR}\PredRasters_LS_{y}_100m_EPSG25833.tif",
+        ]
 
-# normalized importance from XGBoost
-importances = model.get_booster().get_score(importance_type='gain')
-total = sum(importances.values())
-weights = {k: v / total for k, v in importances.items()}
-print("Normalized weights:")
-for feature, weight in weights.items():
-    print(f"{feature}: {weight:.4f}")
+def choose_tif_paths(years, mode):
+    """Locate the GeoTIFF for each year based on expected names."""
+    paths = {}
+    for y in years:
+        found = None
+        for p in candidates_for_year(y, mode):
+            if os.path.exists(p):
+                found = p
+                break
+        if not found:
+            raise FileNotFoundError(
+                f"No predictor TIFF found for year {y} in {BASE_DIR}. "
+                f"Check file names and folder."
+            )
+        paths[y] = found
+    return paths
 
+TIF_PATHS = choose_tif_paths(YEARS, MODE)
 
-'''
-# AGB estimate maps
-years = [2018, 2019, 2020, 2021, 2022, 2023, 2024]
-tif_paths = {
+def select_band_indexes(band_count, mode):
+    """
+    Return 1-based band indexes to read the requested FEATURES from a TIFF.
+    S2 expects 7 bands: NDVI, MSI, NDVI705, elevation, slope, broadleaf_share, conifer_share.
+    If there are 8 bands, skip band 6 named forest_frac and read [1,2,3,4,5,7,8].
+    LS expects 6 bands: NDVI, MSI, elevation, slope, broadleaf_share, conifer_share.
+    If there are 7 bands, skip band 5 named forest_frac and read [1,2,3,4,6,7].
+    """
+    if mode == 'S2':
+        if band_count == 7:
+            return [1, 2, 3, 4, 5, 6, 7]
+        elif band_count == 8:
+            return [1, 2, 3, 4, 5, 7, 8]
+    else:
+        if band_count == 6:
+            return [1, 2, 3, 4, 5, 6]
+        elif band_count == 7:
+            return [1, 2, 3, 4, 6, 7]
+    raise ValueError(f"Unexpected band count {band_count} for mode {mode}.")
 
-    2018: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2018_all.tif",
-    2019: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2019_all.tif",
-    2020: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2020_all.tif",
-    2021: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2021_all.tif",
-    2022: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2022_all.tif",
-    2023: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2023_all.tif",
-    2024: "C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/predictors_2024_all.tif"
-}
-
-def create_agb_map(tif_path, year):
+def create_agb_map(tif_path, year, mode, expected_feature_list):
+    """Apply the trained model to a predictor stack and write a single-band AGB GeoTIFF."""
     with rasterio.open(tif_path) as src:
-        stack = src.read()
+        bands_total = src.count
+        idx = select_band_indexes(bands_total, mode)
+        stack = src.read(indexes=idx)   # shape: (bands_needed, rows, cols)
         profile = src.profile
+        nodata = src.nodata
+
+    if stack.shape[0] != len(expected_feature_list):
+        raise ValueError(
+            f"TIFF for year {year} has {stack.shape[0]} selected bands "
+            f"but {len(expected_feature_list)} are expected: {expected_feature_list}."
+        )
+
     bands, rows, cols = stack.shape
-    reshaped = stack.reshape(bands, -1).T
-    valid_mask = ~np.isnan(reshaped).any(axis=1)
-    preds = model.predict(reshaped[valid_mask])
-    agb_map = np.full((rows * cols), np.nan, dtype=np.float32)
-    agb_map[valid_mask] = preds
-    agb_map = agb_map.reshape(rows, cols)
-    profile.update(dtype=rasterio.float32, count=1, compress='lzw')
-    out_path = f"C:/Users/lucip/Desktop/diplomová práce/vysledky/agb_corine_onehot/AGB_prediction_{year}.tif"
+    reshaped = stack.reshape(bands, -1).T.astype(np.float32)  # shape: (n_pix, n_feat)
+
+    valid = np.ones(reshaped.shape[0], dtype=bool)
+    if nodata is not None:
+        valid &= ~(np.isclose(reshaped, nodata)).any(axis=1)
+    valid &= ~np.isnan(reshaped).any(axis=1)
+
+    preds = np.full((reshaped.shape[0],), np.nan, dtype=np.float32)
+    if valid.any():
+        preds[valid] = model.predict(reshaped[valid])
+
+    agb_map = preds.reshape(rows, cols)
+
+    profile.update(dtype=rasterio.float32, count=1, compress='lzw', nodata=np.nan)
+    out_path = rf"{BASE_DIR}\AGB_{mode}_prediction_{year}.tif"
     with rasterio.open(out_path, "w", **profile) as dst:
-        dst.write(agb_map.astype(rasterio.float32), 1)
-    print(f"Uložena mapa pro rok {year}: {out_path}")
+        dst.write(agb_map, 1)
+    print(f"Saved map for year {year}: {out_path}")
 
-for year in years:
-    create_agb_map(tif_paths[year], year)
+# Expected band names in the same order as FEATURES
+EXPECTED_BANDS = FEATURES.copy()
 
-'''
+for yr in YEARS:
+    create_agb_map(TIF_PATHS[yr], yr, MODE, EXPECTED_BANDS)
