@@ -1,0 +1,164 @@
+/************************************************************
+  GEDI L4A VALIDATION: BROADLEAF VS CONIFER (2019)
+  ----------------------------------------------------------
+  • ROI from a single FeatureCollection asset; 100 m proj (EPSG:25833).
+  • Loads GEDI04_A monthly, applies QC
+      (l4_quality_flag=1, degrade_flag=0, sensitivity≥0.95), mosaics.
+  • Loads 100 m forest fractions (asset: forest_100m_<year>_3bands),
+      flexible band names → broadleaf_share, conifer_share, forest_mask.
+  • Majority masks (broadleaf/conifer) with threshold MAJ.
+  • Samples GEDI per class (≤10k pts each, 25 m), filters non-null.
+  • Reports unweighted (mean, sd, n) and weighted (1/SE²) stats
+      including effective n and 95% CI.
+  • Optional: export sampled points to Drive (CSV).
+
+  Inputs to check:
+    ROI_ASSET, FOREST_YEAR, GEDI_START, GEDI_END
+
+  Outputs:
+    Console diagnostics and statistics; optional CSVs.
+************************************************************/
+
+// PARAMETERS
+var ROI_ASSET = 'projects/tidy-forest-404511/assets/hranice_cr';
+var FOREST_YEAR = 2019;
+var GEDI_START  = '2019-06-01';
+var GEDI_END    = '2019-09-30';
+
+function forestSharesAssetId(year){
+  return 'projects/tidy-forest-404511/assets/forest_100m_' + year + '_3bands';
+}
+
+// ROI
+var ROI = ee.FeatureCollection(ROI_ASSET).geometry();
+var proj100 = ee.Projection('EPSG:25833').atScale(100);
+
+// GEDI (QC) 
+function qc(im){
+  return im.updateMask(im.select('l4_quality_flag').eq(1))
+           .updateMask(im.select('degrade_flag').eq(0))
+           .updateMask(im.select('sensitivity').gte(0.95));
+}
+
+var gediBands = [
+  'agbd','agbd_se','agbd_pi_lower','agbd_pi_upper',
+  'l4_quality_flag','degrade_flag','sensitivity'
+];
+
+var gedi = ee.ImageCollection('LARSE/GEDI/GEDI04_A_002_MONTHLY')
+  .filterDate(GEDI_START, ee.Date(GEDI_END).advance(1, 'day'))
+  .filterBounds(ROI)
+  .map(qc)
+  .select(gediBands)
+  .mosaic()
+  .clip(ROI);
+
+// Forest shares (100 m) 
+function loadForestShares(year){
+  var img = ee.Image(forestSharesAssetId(year)).clip(ROI);
+  var names = img.bandNames();
+  function has(list, name){ return ee.Number(list.indexOf(name)).gte(0); }
+  var renamed = ee.Image(ee.Algorithms.If(
+    has(names, 'b1'),
+    img.select(['b1','b2','b3'])
+       .rename(['broadleaf_share','conifer_share','forest_mask']),
+    img.select(['broadleaf_share','conifer_share','forest_mask'])
+  ));
+  return renamed.toFloat().reproject(proj100);
+}
+
+var forest = loadForestShares(FOREST_YEAR);
+var forestMask = forest.select('forest_mask').gt(0.5);
+
+// Majority split 
+var MAJ = 0.5;
+var broadMajor = forest.select('broadleaf_share').gt(MAJ).and(forestMask);
+var conifMajor = forest.select('conifer_share').gt(MAJ).and(forestMask);
+
+// stack for sampling (GEDI + shares for inspection)
+var stack = gedi.addBands(forest.select(['broadleaf_share','conifer_share']));
+
+// SAMPLING
+var stackBroad = stack.updateMask(broadMajor);
+var stackConif = stack.updateMask(conifMajor);
+var REQ = gediBands.concat(['broadleaf_share','conifer_share']);
+
+var ptsBroadAll = stackBroad.sample({region: ROI, scale: 25, geometries: true})
+  .filter(ee.Filter.notNull(REQ));
+var ptsConifAll = stackConif.sample({region: ROI, scale: 25, geometries: true})
+  .filter(ee.Filter.notNull(REQ));
+
+var ptsBroad = ptsBroadAll.randomColumn('r', 123).sort('r').limit(10000);
+var ptsConif = ptsConifAll.randomColumn('r', 456).sort('r').limit(10000);
+
+
+print('Candidates (broadleaf):', ptsBroadAll.size());
+print('Candidates (conifer)  :', ptsConifAll.size());
+print('Sample ≤10k (broadleaf):', ptsBroad.size());
+print('Sample ≤10k (conifer)  :', ptsConif.size());
+print('Preview broadleaf:', ptsBroad.limit(5));
+print('Preview conifer  :', ptsConif.limit(5));
+
+// STATS
+// unweighted mean/sd/n
+function unweightedStats(fc){
+  return fc.reduceColumns(
+    ee.Reducer.mean()
+      .combine({reducer2: ee.Reducer.stdDev(), sharedInputs: true})
+      .combine({reducer2: ee.Reducer.count(),  sharedInputs: true}),
+    ['agbd']
+  );
+}
+
+// weighted by 1/SE^2 (capped), returns {wMean,wStd,nEff,ci95}
+function weightedStats(fc){
+  var fcW = fc.map(function(f){
+    var se = ee.Number(f.get('agbd_se'));
+    var w  = ee.Algorithms.If(se, ee.Number(1).divide(se.pow(2)).min(1e6), null);
+    return ee.Feature(f).set({
+      w: w,
+      w_agbd: ee.Algorithms.If(w, ee.Number(f.get('agbd')).multiply(ee.Number(w)), null)
+    });
+  }).filter(ee.Filter.notNull(['w','w_agbd']));
+
+  var sum_w_agbd = ee.Number(fcW.aggregate_sum('w_agbd'));
+  var sum_w      = ee.Number(fcW.aggregate_sum('w'));
+  var wMean      = sum_w_agbd.divide(sum_w);
+
+  var wVar = ee.Number(fcW.map(function(f){
+      var x = ee.Number(f.get('agbd'));
+      var w = ee.Number(f.get('w'));
+      return ee.Feature(null, {'term': w.multiply(x.subtract(wMean).pow(2))});
+    }).aggregate_sum('term')).divide(sum_w);
+  var wStd = wVar.sqrt();
+
+  var sum_w2 = ee.Number(fcW.map(function(f){
+      var w = ee.Number(f.get('w'));
+      return ee.Feature(null, {'w2': w.pow(2)});
+    }).aggregate_sum('w2'));
+  var nEff = sum_w.pow(2).divide(sum_w2);
+
+  var ci95 = wStd.divide(nEff.sqrt()).multiply(1.96);
+  return ee.Dictionary({wMean: wMean, wStd: wStd, nEff: nEff, ci95: ci95});
+}
+
+print('UNWEIGHTED — broadleaf [mean, sd, n]:', unweightedStats(ptsBroad));
+print('UNWEIGHTED — conifer   [mean, sd, n]:', unweightedStats(ptsConif));
+print('WEIGHTED (1/SE^2) — broadleaf:', weightedStats(ptsBroad));
+print('WEIGHTED (1/SE^2) — conifer  :', weightedStats(ptsConif));
+
+// ---------------- Optional export ----------------
+/*
+Export.table.toDrive({
+  collection: ptsBroad,
+  description: 'GEDI2019_broadleaf_points',
+  folder: 'GEE', fileNamePrefix: 'GEDI2019_broadleaf_points',
+  fileFormat: 'CSV'
+});
+Export.table.toDrive({
+  collection: ptsConif,
+  description: 'GEDI2019_conifer_points',
+  folder: 'GEE', fileNamePrefix: 'GEDI2019_conifer_points',
+  fileFormat: 'CSV'
+});
+*/
