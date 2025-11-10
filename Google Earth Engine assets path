@@ -1,0 +1,20 @@
+Google Earth Engine assets path
+
+Above Ground Biomass 2018: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/AGB_S2_2018
+Above Ground Biomass 2019: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/AGB_S2_2019
+Above Ground Biomass 2020: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/AGB_S2_2020
+Above Ground Biomass 2021: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/AGB_S2_2021
+Above Ground Biomass 2022: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/AGB_S2_2022
+Above Ground Biomass 2023: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/AGB_S2_2023
+
+Forest (Dynamic World + High Resolution Layer)
+Forest 2018: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/forest_100m_2018_3bands
+Forest 2019: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/forest_100m_2019_3bands
+Forest 2020: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/forest_100m_2020_3bands
+Forest 2021: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/forest_100m_2021_3bands
+Forest 2022: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/forest_100m_2022_3bands
+Forest 2023: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/forest_100m_2023_3bands
+Forest 2024: https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/forest_100m_2024_3bands
+
+Czech republic boundary (source: ArcČR® 500 version 3.3)
+https://code.earthengine.google.com/?asset=projects/tidy-forest-404511/assets/hranice_cr
