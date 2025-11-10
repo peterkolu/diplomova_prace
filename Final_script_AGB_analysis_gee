@@ -1,43 +1,34 @@
+// BASIC SCRIPT: AGB → Carbon (C) and CO₂ using DW+HR mask
+// The script:
+//   1) Builds a forest mask and type (broadleaf, conifer) from DW+HR fractions.
+//   2) Converts AGB (t/ha) to carbon (t C/ha) for a chosen year.
+//   3) Computes CO₂ change (t CO₂/ha) between two years.
+//   4) Prints summary stats to the console and shows map layers.
+//   5) Optionally exports rasters to Google Drive.
 
-//BASIC SCRIPT: AGB → Carbon (C) and CO₂ using DW+HR mask
-//Configure inputs in the CONFIGURATION section below.
-//The script:
-    //1) Builds a forest mask and type (broadleaf, conifer) from DW+HR fractions.
-    //2) Converts AGB (t/ha) to carbon (t C/ha) for a chosen year.
-    //3) Computes CO₂ change (t CO₂/ha) between two years.
-    //4) Prints summary stats to the console and shows map layers.
-    //5) Optionally exports rasters to Google Drive.
+//////////////////////// CONFIGURATION ////////////////////////
 
-
-// CONFIGURATION
-// (A) Analysis region (ROI).
-//   Leave null to use the Czech Republic boundary.
-//   Or set a FeatureCollection asset ID (e.g., administrative units).
-//   Optionally filter the FC by a field=value pair.
-var ROI_ASSET_ID      = null;  // e.g., 'projects/.../kraje'
-var ROI_FILTER_FIELD  = null;  // e.g., 'NAZEV_KRAJE'
-var ROI_FILTER_VALUE  = null;  // e.g., 'Plzeňský kraj'
+// (A) Region of interest (ROI) — CHANGE ONLY THIS LINE to switch locality (default: Czech republic):
+var ROI_ASSET_ID = 'projects/tidy-forest-404511/assets/hranice_cr';
 
 // (B) Years
-var YEAR_CARBON       = 2021;  // map of carbon for this year (2018–2024)
-var EMISS_START_YEAR  = 2018;  // start year for CO₂ change
-var EMISS_END_YEAR    = 2024;  // end year for CO₂ change (must be > start)
+var YEAR_CARBON       = 2021;  // map of carbon for this year (select year 2018–2024)
+var EMISS_START_YEAR  = 2018;  // start year for CO₂ change (select year 2018–2023)
+var EMISS_END_YEAR    = 2024;  // end year for CO₂ change (select year, must be > start)
 
 // (C) Visualization
 var CRS               = 'EPSG:25833';
 var SCALE100          = 100;
 var CARBON_MINMAX     = {min: 0,   max: 150, palette: ['#ffffcc','#e5f5a9','#b8e186','#7fbc41','#4d9221']};
 var CO2_MINMAX        = {min: -40, max: 40,  palette: ['#1a9641','#a6d96a','#d9ef8b','#ffffbf','#fdae61','#f46d43','#d73027']};
-// Negative values mean sequestration (green). Positive values mean emissions (orange to red).
+// Negative = sequestration (green), Positive = emissions (orange→red).
 
 // (D) Exports to Google Drive
 var EXPORT_CARBON     = false;
 var EXPORT_CO2        = false;
 var DRIVE_FOLDER      = 'GEE_exports';
 
-// DATA & PATHS
-// Czech Republic boundary used as fallback ROI
-var CZ_BOUNDARY = ee.FeatureCollection('projects/tidy-forest-404511/assets/hranice_cr');
+//////////////////////// DATA & PATHS /////////////////////////
 
 // AGB predictions 2018–2024 (single band, t/ha)
 var AGB = {
@@ -55,7 +46,12 @@ function forestFracAssetId(year){
   return 'projects/tidy-forest-404511/assets/forest_100m_' + year + '_3bands';
 }
 
-//PRE-PROCESSING
+//////////////////////// PRE-PROCESSING ///////////////////////
+
+// Global ROI geometry (union of all features in the asset)
+var ROI = ee.FeatureCollection(ROI_ASSET_ID).geometry();
+Map.centerObject(ROI, 7);
+
 var proj100 = ee.Projection(CRS).atScale(SCALE100);
 var MAJ     = 0.5;   // majority threshold for broadleaf vs conifer
 
@@ -64,37 +60,24 @@ var CF_BROAD = 0.51, BF_BROAD = 0.24; // broadleaf
 var CF_CONIF = 0.48, BF_CONIF = 0.20; // conifer
 var CO2_F    = 3.667;                 // C to CO₂
 
-// Resolve ROI from user asset or use the national boundary
-function getROI(){
-  var base = CZ_BOUNDARY;
-  if (!ROI_ASSET_ID){
-    return base.geometry();
-  }
-  var fc = ee.FeatureCollection(ROI_ASSET_ID);
-  if (ROI_FILTER_FIELD && ROI_FILTER_VALUE !== null){
-    fc = fc.filter(ee.Filter.eq(ROI_FILTER_FIELD, ROI_FILTER_VALUE));
-  }
-  var geom = fc.geometry();
-  // Fallback to CZ boundary if filter returns nothing
-  return ee.Algorithms.If(geom.isUnbounded(), base.geometry(), geom);
-}
-
 // Load DW+HR fractions and derive forest type
 // Output bands: forest_mask, broad_major, conifer_major, forest_type (1=broadleaf, 2=conifer)
 function loadForestFracs(year){
   var raw   = ee.Image(forestFracAssetId(year));
   var names = raw.bandNames();
 
+  function has(list, name){ return ee.Number(list.indexOf(name)).gte(0); }
+
   var conifName = ee.String(ee.Algorithms.If(
-    names.indexOf('coniferous_fraction').neq(-1), 'coniferous_fraction',
-    ee.Algorithms.If(names.indexOf('conifer_share').neq(-1), 'conifer_share', 'b1')
+    has(names, 'coniferous_fraction'), 'coniferous_fraction',
+    ee.Algorithms.If(has(names, 'conifer_share'), 'conifer_share', 'b1')
   ));
   var decidName = ee.String(ee.Algorithms.If(
-    names.indexOf('deciduous_fraction').neq(-1), 'deciduous_fraction',
-    ee.Algorithms.If(names.indexOf('broadleaf_share').neq(-1), 'broadleaf_share', 'b2')
+    has(names, 'deciduous_fraction'), 'deciduous_fraction',
+    ee.Algorithms.If(has(names, 'broadleaf_share'), 'broadleaf_share', 'b2')
   ));
   var maskName  = ee.String(ee.Algorithms.If(
-    names.indexOf('forest_mask').neq(-1), 'forest_mask', 'b3'
+    has(names, 'forest_mask'), 'forest_mask', 'b3'
   ));
 
   var conif = raw.select(conifName).toFloat();
@@ -125,49 +108,45 @@ function carbonFromAgb(agbImg, fr){
   return cBroad.unmask(0).add(cConif.unmask(0)).updateMask(fr.forestMask).rename('carbon'); // t C/ha
 }
 
-// MAIN RUN — CARBON (ONE YEAR)
-(function computeCarbon(){
-  var roi = ee.Geometry(getROI());
-  Map.centerObject(roi, 7);
+//////////////////////// MAIN — CARBON (ONE YEAR) /////////////
 
+(function computeCarbon(){
   var y  = YEAR_CARBON;
   var fr = loadForestFracs(y);
   var agbImg = ee.Image(AGB[y]);
-  var carbon = carbonFromAgb(agbImg, fr).clip(roi);
+  var carbon = carbonFromAgb(agbImg, fr).clip(ROI);
 
-  // Map layers
-  Map.addLayer(fr.typeImg.clip(roi), {min:1, max:2, palette:['#7CFC00','#006400']}, 'Forest type (1=broadleaf, 2=conifer)', false);
+  Map.addLayer(fr.typeImg.clip(ROI), {min:1, max:2, palette:['#7CFC00','#006400']}, 'Forest type (1=broadleaf, 2=conifer)', false);
   Map.addLayer(carbon, CARBON_MINMAX, 'Carbon (t C/ha) – ' + y);
 
-  // Console statistics
   var ha = ee.Image.pixelArea().divide(1e4); // hectares per pixel
   var sumC = carbon.multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('carbon');
 
   var meanC = carbon.reduceRegion({
-    reducer: ee.Reducer.mean(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.mean(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('carbon');
 
   var cBroad = carbon.updateMask(fr.broadMaj);
   var cConif = carbon.updateMask(fr.conifMaj);
   var sumBroad = cBroad.multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('carbon');
   var sumConif = cConif.multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('carbon');
 
   var areaForest = fr.forestMask.multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('forest_mask');
 
   var areaBroad = fr.broadMaj.multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('broad_major');   
 
   var areaConif = fr.conifMaj.multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('conifer_major'); 
 
   print('CARBON (t C) — year', y, '— ROI summary');
@@ -179,22 +158,20 @@ function carbonFromAgb(agbImg, fr){
   print('  of which broadleaf [thous. ha]:', ee.Number(areaBroad).divide(1e3));
   print('  of which conifer [thous. ha]:', ee.Number(areaConif).divide(1e3));
 
-  // Optional export
   if (EXPORT_CARBON){
     Export.image.toDrive({
       image: carbon.toFloat(),
       description: 'Carbon_tCha_' + y + '_100m_EPSG25833',
       folder: DRIVE_FOLDER,
       fileNamePrefix: 'Carbon_tCha_' + y + '_100m_EPSG25833',
-      region: roi, crs: CRS, scale: SCALE100, maxPixels: 1e13
+      region: ROI, crs: CRS, scale: SCALE100, maxPixels: 1e13
     });
   }
 })();
 
-//MAIN RUN — CO₂ EMISSIONS AND SEQUESTRATION
-(function computeEmissions(){
-  var roi = ee.Geometry(getROI());
+//////////////////////// MAIN — CO₂ CHANGE /////////////////////
 
+(function computeEmissions(){
   var y0 = EMISS_START_YEAR;
   var y1 = EMISS_END_YEAR;
   if (y1 <= y0){
@@ -208,30 +185,26 @@ function carbonFromAgb(agbImg, fr){
   var C0 = carbonFromAgb(ee.Image(AGB[y0]), fr0);
   var C1 = carbonFromAgb(ee.Image(AGB[y1]), fr1);
 
-  // t CO₂/ha (+ emissions, − sequestration)
-  var co2 = C1.subtract(C0).multiply(CO2_F).rename('co2').clip(roi);
+  var co2 = C1.subtract(C0).multiply(CO2_F).rename('co2').clip(ROI);
 
-  // Map layer
   Map.addLayer(co2, CO2_MINMAX, 'CO₂ (t/ha) — ' + y0 + ' → ' + y1);
 
-  // Console statistics
   var ha = ee.Image.pixelArea().divide(1e4);
   var sumCO2 = co2.multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('co2');
 
   var meanCO2 = co2.reduceRegion({
-    reducer: ee.Reducer.mean(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.mean(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('co2');
 
-  // Split into sequestration (<0) and emissions (>0)
   var neg = co2.lt(0);
   var pos = co2.gt(0);
   var sumNeg = co2.updateMask(neg).multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('co2');
   var sumPos = co2.updateMask(pos).multiply(ha).reduceRegion({
-    reducer: ee.Reducer.sum(), geometry: roi, scale: SCALE100, maxPixels: 1e13
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('co2');
 
   print('CO₂ (t) — period', y0, '→', y1, 'ROI summary');
@@ -240,14 +213,13 @@ function carbonFromAgb(agbImg, fr){
   print('Sequestration (<0) [Mt CO₂]:', ee.Number(sumNeg).divide(1e6));
   print('Emissions (>0) [Mt CO₂]:', ee.Number(sumPos).divide(1e6));
 
-  // Optional export
   if (EXPORT_CO2){
     Export.image.toDrive({
       image: co2.toFloat(),
       description: 'CO2_diff_' + y0 + '_' + y1 + '_100m_EPSG25833',
       folder: DRIVE_FOLDER,
       fileNamePrefix: 'CO2_diff_' + y0 + '_' + y1 + '_100m_EPSG25833',
-      region: roi, crs: CRS, scale: SCALE100, maxPixels: 1e13
+      region: ROI, crs: CRS, scale: SCALE100, maxPixels: 1e13
     });
   }
 })();
