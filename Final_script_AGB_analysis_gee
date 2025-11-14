@@ -28,7 +28,7 @@ var EXPORT_CARBON     = false;
 var EXPORT_CO2        = false;
 var DRIVE_FOLDER      = 'GEE_exports';
 
-//////////////////////// DATA & PATHS /////////////////////////
+//////////////////////// DATA AND PATHS /////////////////////////
 
 // AGB predictions 2018–2024 (single band, t/ha)
 var AGB = {
