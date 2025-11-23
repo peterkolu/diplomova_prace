@@ -6,13 +6,12 @@
 //   4) Prints summary stats to the console and shows map layers.
 //   5) Optionally exports rasters to Google Drive.
 
-//////////////////////// CONFIGURATION ////////////////////////
-
+// CONFIGURATION 
 // (A) Region of interest (ROI) — CHANGE ONLY THIS LINE to switch locality (default: Czech republic):
 var ROI_ASSET_ID = 'projects/tidy-forest-404511/assets/hranice_cr';
 
 // (B) Years
-var YEAR_CARBON       = 2021;  // map of carbon for this year (select year 2018–2024)
+var YEAR_CARBON       = 2022;  // map of carbon for this year (select year 2018–2024)
 var EMISS_START_YEAR  = 2018;  // start year for CO₂ change (select year 2018–2023)
 var EMISS_END_YEAR    = 2024;  // end year for CO₂ change (select year, must be > start)
 
@@ -28,7 +27,7 @@ var EXPORT_CARBON     = false;
 var EXPORT_CO2        = false;
 var DRIVE_FOLDER      = 'GEE_exports';
 
-//////////////////////// DATA AND PATHS /////////////////////////
+//DATA 
 
 // AGB predictions 2018–2024 (single band, t/ha)
 var AGB = {
@@ -46,7 +45,7 @@ function forestFracAssetId(year){
   return 'projects/tidy-forest-404511/assets/forest_100m_' + year + '_3bands';
 }
 
-//////////////////////// PRE-PROCESSING ///////////////////////
+// PRE-PROCESSING 
 
 // Global ROI geometry (union of all features in the asset)
 var ROI = ee.FeatureCollection(ROI_ASSET_ID).geometry();
@@ -108,18 +107,29 @@ function carbonFromAgb(agbImg, fr){
   return cBroad.unmask(0).add(cConif.unmask(0)).updateMask(fr.forestMask).rename('carbon'); // t C/ha
 }
 
-//////////////////////// MAIN — CARBON (ONE YEAR) /////////////
+// MAIN — CARBON (ONE YEAR) 
 
 (function computeCarbon(){
   var y  = YEAR_CARBON;
   var fr = loadForestFracs(y);
   var agbImg = ee.Image(AGB[y]);
+
+  // Carbon map
   var carbon = carbonFromAgb(agbImg, fr).clip(ROI);
 
-  Map.addLayer(fr.typeImg.clip(ROI), {min:1, max:2, palette:['#7CFC00','#006400']}, 'Forest type (1=broadleaf, 2=conifer)', false);
+  // AGB map (t/ha) masked to forest
+  var agb100  = agbImg.reproject(proj100).rename('AGB');
+  var agb     = agb100.updateMask(fr.forestMask).clip(ROI);
+  var agbBroad = agb.updateMask(fr.broadMaj);
+  var agbConif = agb.updateMask(fr.conifMaj);
+
+  Map.addLayer(fr.typeImg.clip(ROI), {min:1, max:2, palette:['#7CFC00','#006400']},
+               'Forest type (1=broadleaf, 2=conifer)', false);
   Map.addLayer(carbon, CARBON_MINMAX, 'Carbon (t C/ha) – ' + y);
 
   var ha = ee.Image.pixelArea().divide(1e4); // hectares per pixel
+
+  // Carbon statistics
   var sumC = carbon.multiply(ha).reduceRegion({
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('carbon');
@@ -143,11 +153,11 @@ function carbonFromAgb(agbImg, fr){
 
   var areaBroad = fr.broadMaj.multiply(ha).reduceRegion({
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
-  }).get('broad_major');   
+  }).get('broad_major');
 
   var areaConif = fr.conifMaj.multiply(ha).reduceRegion({
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
-  }).get('conifer_major'); 
+  }).get('conifer_major');
 
   print('CARBON (t C) — year', y, '— ROI summary');
   print('Total [Mt C]:', ee.Number(sumC).divide(1e6));
@@ -157,6 +167,36 @@ function carbonFromAgb(agbImg, fr){
   print('Forest area [thous. ha]:', ee.Number(areaForest).divide(1e3));
   print('  of which broadleaf [thous. ha]:', ee.Number(areaBroad).divide(1e3));
   print('  of which conifer [thous. ha]:', ee.Number(areaConif).divide(1e3));
+
+  // ===== AGB statistics (t, t/ha) =====
+  var sumAGB = agb.multiply(ha).reduceRegion({
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
+  }).get('AGB');
+  var meanAGB = agb.reduceRegion({
+    reducer: ee.Reducer.mean(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
+  }).get('AGB');
+
+  var sumAGB_broad = agbBroad.multiply(ha).reduceRegion({
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
+  }).get('AGB');
+  var meanAGB_broad = agbBroad.reduceRegion({
+    reducer: ee.Reducer.mean(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
+  }).get('AGB');
+
+  var sumAGB_conif = agbConif.multiply(ha).reduceRegion({
+    reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
+  }).get('AGB');
+  var meanAGB_conif = agbConif.reduceRegion({
+    reducer: ee.Reducer.mean(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
+  }).get('AGB');
+
+  print('AGB (t) — year', y, '— ROI summary');
+  print('Total AGB [Mt]:', ee.Number(sumAGB).divide(1e6));
+  print('Mean AGB [t/ha]:', meanAGB);
+  print('Broadleaf AGB [Mt]:', ee.Number(sumAGB_broad).divide(1e6));
+  print('Broadleaf AGB [t/ha]:', meanAGB_broad);
+  print('Conifer AGB [Mt]:', ee.Number(sumAGB_conif).divide(1e6));
+  print('Conifer AGB [t/ha]:', meanAGB_conif);
 
   if (EXPORT_CARBON){
     Export.image.toDrive({
@@ -169,7 +209,7 @@ function carbonFromAgb(agbImg, fr){
   }
 })();
 
-//////////////////////// MAIN — CO₂ CHANGE /////////////////////
+//CO₂ CHANGE 
 
 (function computeEmissions(){
   var y0 = EMISS_START_YEAR;
@@ -223,3 +263,4 @@ function carbonFromAgb(agbImg, fr){
     });
   }
 })();
+
