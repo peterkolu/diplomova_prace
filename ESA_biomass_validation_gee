@@ -1,1 +1,169 @@
+/************************************************************
+  AGB vs ESA AGB VALIDATION (PIXEL-BASED, 100 m)
+  ----------------------------------------------------------
+  • Compares modelled AGB with ESA AGB reference for a given year.
+  • Computes RMSE, MAE, ME and R² over forested pixels.
+  • Builds a per-pixel tolerance threshold and classifies pixels
+    as within tolerance, overestimation or underestimation.
+  • Produces difference and evaluation maps and an optional
+    scatter plot in the console.
+  • Exports difference, evaluation and tolerance rasters to Drive.
+*************************************************************/
 
+// PARAMETERS
+var YEAR        = 2019;  // select validation year
+var ROI_ASSET   = 'projects/tidy-forest-404511/assets/hranice_cr';
+
+// Model AGB prediction (1 band)
+var PRED_ASSET  = 'projects/tidy-forest-404511/assets/AGB_S2_2019';
+// ESA AGB reference (1 band)
+var REF_ASSET   = 'projects/tidy-forest-404511/assets/ESA_AGB_2019_UTM';
+
+// Tolerance thresholds (based on model validation – adjust as needed)
+var ABS_THR = 41;    // absolute tolerance [t/ha] (e.g. ~MAE)
+var REL_THR = 0.20;  // relative tolerance: 20 % of AGB_ref
+var MIN_THR = 10;    // minimum tolerance [t/ha]
+
+// Output settings
+var CRS          = 'EPSG:25833';
+var SCALE        = 100;
+var proj100      = ee.Projection(CRS).atScale(SCALE);
+var DRIVE_FOLDER = 'GEE_exports';
+
+// Forest fractions (3 bands: b1=conifer, b2=deciduous, b3=forest_mask)
+function forestSharesAssetId(y){
+  return 'projects/tidy-forest-404511/assets/forest_100m_' + y + '_3bands';
+}
+
+//DATA 
+var region = ee.FeatureCollection(ROI_ASSET).geometry();
+
+// 1) AGB prediction and reference (aligned to 100 m EPSG:25833)
+var agb_pred = ee.Image(PRED_ASSET).select(0).rename('AGB_pred')
+  .clip(region).setDefaultProjection(CRS, null, SCALE).reproject(proj100);
+
+var agb_ref  = ee.Image(REF_ASSET).select(0).rename('AGB_ref')
+  .clip(region).setDefaultProjection(CRS, null, SCALE).reproject(proj100);
+
+// 2) Forest mask from fractions layer (robust band naming)
+var frRaw = ee.Image(forestSharesAssetId(YEAR)).clip(region).reproject(proj100);
+var bnames = frRaw.bandNames();
+
+var forestMask = ee.Image(ee.Algorithms.If(
+  bnames.contains('b3'),
+  frRaw.select('b3'),
+  // Fallback: if no explicit mask, use pixels where sum of shares > 0
+  frRaw.select([0,1]).reduce(ee.Reducer.sum()).gt(0)
+)).toByte().rename('forest_mask');
+
+// 3) Stack prediction and reference, masked to forest
+var stack = agb_pred.addBands(agb_ref).updateMask(forestMask);
+
+/******************** METRICS ***************************/
+// Difference raster
+var diff   = stack.select('AGB_pred').subtract(stack.select('AGB_ref')).rename('diff');
+var adiff  = diff.abs();
+var sdiff2 = diff.pow(2);
+
+// RMSE, MAE, ME
+var rmse = ee.Number(sdiff2.reduceRegion({
+  reducer: ee.Reducer.mean(), geometry: region, scale: SCALE, maxPixels: 1e13
+}).get('diff')).sqrt();
+
+var mae  = ee.Number(adiff.reduceRegion({
+  reducer: ee.Reducer.mean(), geometry: region, scale: SCALE, maxPixels: 1e13
+}).get('diff'));
+
+var me   = ee.Number(diff.reduceRegion({
+  reducer: ee.Reducer.mean(), geometry: region, scale: SCALE, maxPixels: 1e13
+}).get('diff'));
+
+// R² = (Pearson r)²
+var r = ee.Number(stack.reduceRegion({
+  reducer: ee.Reducer.pearsonsCorrelation(),
+  geometry: region, scale: SCALE, maxPixels: 1e13
+}).get('correlation'));
+var r2 = r.pow(2);
+
+// Print metrics to console
+print('RMSE [t/ha]:', rmse);
+print('MAE  [t/ha]:', mae);
+print('ME   [t/ha]:', me);
+print('R²        :', r2);
+
+//TOLERANCE MAP 
+// Per-pixel threshold: max(ABS_THR, REL_THR * AGB_ref, MIN_THR)
+var thr = ee.Image.constant(ABS_THR)
+  .max(agb_ref.multiply(REL_THR))
+  .max(MIN_THR);
+
+// Classes: 1=within tolerance, 2=overestimation, 3=underestimation
+var within = diff.abs().lte(thr);
+var over   = diff.gt(thr);
+var under  = diff.lt(thr.multiply(-1));
+
+var classImg = ee.Image(0)
+  .where(within, 1).where(over, 2).where(under, 3)
+  .updateMask(forestMask).rename('eval_class');
+
+// Share of pixels within tolerance (info only)
+var coverage = within.updateMask(forestMask).toFloat().reduceRegion({
+  reducer: ee.Reducer.mean(), geometry: region, scale: SCALE, maxPixels: 1e13
+}).get('diff');
+print('Share of pixels within tolerance [%]:', ee.Number(coverage).multiply(100));
+
+//VISUALIZATION (OPTIONAL)
+Map.centerObject(region, 7);
+Map.addLayer(
+  diff.updateMask(forestMask),
+  {min:-100, max:100, palette:['#d73027','#ffffbf','#1a9850']},
+  'AGB_pred − AGB_ref (t/ha)'
+);
+Map.addLayer(
+  classImg,
+  {min:1, max:3, palette:['#cccccc','#2166ac','#b2182b']},
+  'Evaluation vs tolerance (1=within, 2=over, 3=under)'
+);
+
+// SCATTER PLOT (OPTIONAL) 
+var sample = stack.sample({
+  region: region, scale: SCALE, numPixels: 50000, tileScale: 4, geometries: false
+});
+var chart = ui.Chart.feature.byFeature(sample, 'AGB_ref', ['AGB_pred'])
+  .setChartType('ScatterChart')
+  .setOptions({
+    title: 'AGB_ref vs AGB_pred (100 m, forest)',
+    hAxis: {title: 'AGB_ref [t/ha]'},
+    vAxis: {title: 'AGB_pred [t/ha]'},
+    pointSize: 1,
+    legend: 'none'
+  });
+print(chart);
+
+// EXPORTS 
+// (1) Difference raster [t/ha]
+Export.image.toDrive({
+  image: diff.toFloat(),
+  description: 'AGB_diff_'+YEAR+'_100m_EPSG25833',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'AGB_diff_'+YEAR+'_100m_EPSG25833',
+  region: region, crs: CRS, scale: SCALE, maxPixels: 1e13
+});
+
+// (2) Evaluation vs tolerance (1=within, 2=over, 3=under)
+Export.image.toDrive({
+  image: classImg.toByte(),
+  description: 'AGB_eval_'+YEAR+'_100m_EPSG25833',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'AGB_eval_'+YEAR+'_100m_EPSG25833',
+  region: region, crs: CRS, scale: SCALE, maxPixels: 1e13
+});
+
+// (3) Optional: export per-pixel tolerance threshold (for audit/debug)
+Export.image.toDrive({
+  image: thr.toFloat().updateMask(forestMask),
+  description: 'AGB_toleranceThreshold_'+YEAR+'_100m_EPSG25833',
+  folder: DRIVE_FOLDER,
+  fileNamePrefix: 'AGB_toleranceThreshold_'+YEAR+'_100m_EPSG25833',
+  region: region, crs: CRS, scale: SCALE, maxPixels: 1e13
+});
