@@ -31,7 +31,7 @@ import shap
 import rasterio
 from joblib import dump
 
-# ============================ 1) INPUTS ============================
+#  INPUTS 
 
 # Training table. Columns must include AGB and predictors for the chosen MODE.
 CSV_PATH = r"C:\Users\lucip\Desktop\diplomová práce\forest_dynamic_HR\AGB_samples_S2_2018_frac.csv"
@@ -45,7 +45,7 @@ BASE_DIR = r"C:\Users\lucip\Desktop\diplomová práce\forest_dynamic_HR"
 # Years to produce prediction maps for.
 YEARS = [2018, 2019, 2020, 2021, 2022, 2023, 2024]
 
-# ============================ 2) FEATURES ============================
+# FEATURES 
 
 if MODE == 'S2':
     FEATURES = ['NDVI', 'MSI', 'NDVI705', 'elevation', 'slope',
@@ -57,7 +57,7 @@ else:
 TARGET = 'AGB'
 print(f"Mode: {MODE} | FEATURES: {FEATURES}")
 
-# ============================ 3) DATA ============================
+# DATA 
 
 # Read CSV and normalize column names
 df = pd.read_csv(CSV_PATH)
@@ -80,7 +80,7 @@ y = df[TARGET].astype(float)
 print("Data shape:", X.shape, "(n_samples, n_features)")
 print("Columns:", list(X.columns))
 
-# ============================ 4) MODEL ============================
+# MODEL 
 
 print("XGBoost version:", xgb.__version__)
 
@@ -122,7 +122,7 @@ def fit_xgb_version_safe(est, X_tr, y_tr, X_va=None, y_va=None):
     else:
         return est.fit(X_tr, y_tr, verbose=False)
 
-# ============================ 5) 5-FOLD CV ============================
+# 5-FOLD CV 
 
 kf = KFold(n_splits=5, shuffle=True, random_state=42)
 rmse_cv, mae_cv, r2_cv = [], [], []
@@ -144,7 +144,7 @@ print(f"  RMSE: {np.mean(rmse_cv):.2f} ± {np.std(rmse_cv):.2f}")
 print(f"  MAE : {np.mean(mae_cv):.2f} ± {np.std(mae_cv):.2f}")
 print(f"  R²  : {np.mean(r2_cv):.3f} ± {np.std(r2_cv):.3f}")
 
-# ============================ 6) HOLD-OUT ============================
+# HOLD-OUT 
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.20, random_state=42
@@ -168,7 +168,7 @@ print(f"  ME  : {me:.2f}")
 # Save fitted model
 dump(model, f"xgb_agb_{MODE.lower()}_100m.joblib")
 
-# ============================ 7) SHAP AND FEATURE IMPORTANCE (optional) ============================
+# SHAP AND FEATURE IMPORTANCE (optional) 
 
 booster = model.get_booster()
 booster.feature_names = list(X.columns)
@@ -221,7 +221,7 @@ for k in range(i+1, len(axes)):
 fig.tight_layout()
 plt.show()
 
-# ============================ 8) PREDICTION RASTERS ============================
+# PREDICTION RASTERS 
 
 def candidates_for_year(y, mode):
     """Return possible file names for the yearly predictor stack. First existing is used."""
