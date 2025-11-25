@@ -5,13 +5,15 @@
 //   3) Computes CO₂ change (t CO₂/ha) between two years.
 //   4) Prints summary stats to the console and shows map layers.
 //   5) Optionally exports rasters to Google Drive.
+// ------------------------------------------------------
 
 // CONFIGURATION 
+
 // (A) Region of interest (ROI) — CHANGE ONLY THIS LINE to switch locality (default: Czech republic):
 var ROI_ASSET_ID = 'projects/tidy-forest-404511/assets/hranice_cr';
 
 // (B) Years
-var YEAR_CARBON       = 2022;  // map of carbon for this year (select year 2018–2024)
+var YEAR_CARBON       = 2018;  // map of carbon for this year (select year 2018–2024)
 var EMISS_START_YEAR  = 2018;  // start year for CO₂ change (select year 2018–2023)
 var EMISS_END_YEAR    = 2024;  // end year for CO₂ change (select year, must be > start)
 
@@ -27,7 +29,7 @@ var EXPORT_CARBON     = false;
 var EXPORT_CO2        = false;
 var DRIVE_FOLDER      = 'GEE_exports';
 
-//DATA 
+// DATA 
 
 // AGB predictions 2018–2024 (single band, t/ha)
 var AGB = {
@@ -54,9 +56,9 @@ Map.centerObject(ROI, 7);
 var proj100 = ee.Projection(CRS).atScale(SCALE100);
 var MAJ     = 0.5;   // majority threshold for broadleaf vs conifer
 
-// Coefficients for AGB → C → CO₂
-var CF_BROAD = 0.51, BF_BROAD = 0.24; // broadleaf
-var CF_CONIF = 0.48, BF_CONIF = 0.20; // conifer
+// Coefficients for AGB → C → CO₂ (AGB only, no BGB)
+var CF_BROAD = 0.51; // broadleaf – carbon fraction of AGB
+var CF_CONIF = 0.48; // conifer – carbon fraction of AGB
 var CO2_F    = 3.667;                 // C to CO₂
 
 // Load DW+HR fractions and derive forest type
@@ -99,12 +101,20 @@ function loadForestFracs(year){
 }
 
 // Convert AGB (t/ha) to carbon (t C/ha) at 100 m using DW+HR types
+
 function carbonFromAgb(agbImg, fr){
   var agb100 = agbImg.reproject(proj100).rename('AGB');
   var m      = agb100.updateMask(fr.forestMask);
-  var cBroad = m.updateMask(fr.broadMaj).multiply(1 + BF_BROAD).multiply(CF_BROAD);
-  var cConif = m.updateMask(fr.conifMaj).multiply(1 + BF_CONIF).multiply(CF_CONIF);
-  return cBroad.unmask(0).add(cConif.unmask(0)).updateMask(fr.forestMask).rename('carbon'); // t C/ha
+
+  var cBroad = m.updateMask(fr.broadMaj)
+    .multiply(CF_BROAD);   // broadleaf carbon from AGB only
+
+  var cConif = m.updateMask(fr.conifMaj)
+    .multiply(CF_CONIF);   // conifer carbon from AGB only
+
+  return cBroad.unmask(0).add(cConif.unmask(0))
+    .updateMask(fr.forestMask)
+    .rename('carbon'); // t C/ha
 }
 
 // MAIN — CARBON (ONE YEAR) 
@@ -114,7 +124,7 @@ function carbonFromAgb(agbImg, fr){
   var fr = loadForestFracs(y);
   var agbImg = ee.Image(AGB[y]);
 
-  // Carbon map
+  // Carbon map (AGB only)
   var carbon = carbonFromAgb(agbImg, fr).clip(ROI);
 
   // AGB map (t/ha) masked to forest
@@ -125,11 +135,11 @@ function carbonFromAgb(agbImg, fr){
 
   Map.addLayer(fr.typeImg.clip(ROI), {min:1, max:2, palette:['#7CFC00','#006400']},
                'Forest type (1=broadleaf, 2=conifer)', false);
-  Map.addLayer(carbon, CARBON_MINMAX, 'Carbon (t C/ha) – ' + y);
+  Map.addLayer(carbon, CARBON_MINMAX, 'Carbon (t C/ha, AGB only) – ' + y);
 
   var ha = ee.Image.pixelArea().divide(1e4); // hectares per pixel
 
-  // Carbon statistics
+  // Carbon statistics 
   var sumC = carbon.multiply(ha).reduceRegion({
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('carbon');
@@ -159,7 +169,7 @@ function carbonFromAgb(agbImg, fr){
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('conifer_major');
 
-  print('CARBON (t C) — year', y, '— ROI summary');
+  print('CARBON (t C, AGB only) — year', y, '— ROI summary');
   print('Total [Mt C]:', ee.Number(sumC).divide(1e6));
   print('Mean [t C/ha]:', meanC);
   print('Broadleaf [Mt C]:', ee.Number(sumBroad).divide(1e6));
@@ -168,7 +178,7 @@ function carbonFromAgb(agbImg, fr){
   print('  of which broadleaf [thous. ha]:', ee.Number(areaBroad).divide(1e3));
   print('  of which conifer [thous. ha]:', ee.Number(areaConif).divide(1e3));
 
-  // ===== AGB statistics (t, t/ha) =====
+  // AGB statistics (t, t/ha)
   var sumAGB = agb.multiply(ha).reduceRegion({
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('AGB');
@@ -201,15 +211,15 @@ function carbonFromAgb(agbImg, fr){
   if (EXPORT_CARBON){
     Export.image.toDrive({
       image: carbon.toFloat(),
-      description: 'Carbon_tCha_' + y + '_100m_EPSG25833',
+      description: 'Carbon_tCha_AGBonly_' + y + '_100m_EPSG25833',
       folder: DRIVE_FOLDER,
-      fileNamePrefix: 'Carbon_tCha_' + y + '_100m_EPSG25833',
+      fileNamePrefix: 'Carbon_tCha_AGBonly_' + y + '_100m_EPSG25833',
       region: ROI, crs: CRS, scale: SCALE100, maxPixels: 1e13
     });
   }
 })();
 
-//CO₂ CHANGE 
+// MAIN — CO₂ CHANGE 
 
 (function computeEmissions(){
   var y0 = EMISS_START_YEAR;
@@ -222,12 +232,13 @@ function carbonFromAgb(agbImg, fr){
   var fr0 = loadForestFracs(y0);
   var fr1 = loadForestFracs(y1);
 
+  // Carbon from AGB only for both years
   var C0 = carbonFromAgb(ee.Image(AGB[y0]), fr0);
   var C1 = carbonFromAgb(ee.Image(AGB[y1]), fr1);
 
   var co2 = C1.subtract(C0).multiply(CO2_F).rename('co2').clip(ROI);
 
-  Map.addLayer(co2, CO2_MINMAX, 'CO₂ (t/ha) — ' + y0 + ' → ' + y1);
+  Map.addLayer(co2, CO2_MINMAX, 'CO₂ (t/ha, AGB only) — ' + y0 + ' → ' + y1);
 
   var ha = ee.Image.pixelArea().divide(1e4);
   var sumCO2 = co2.multiply(ha).reduceRegion({
@@ -247,7 +258,7 @@ function carbonFromAgb(agbImg, fr){
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('co2');
 
-  print('CO₂ (t) — period', y0, '→', y1, 'ROI summary');
+  print('CO₂ (t, AGB only) — period', y0, '→', y1, 'ROI summary');
   print('Total [Mt CO₂]:', ee.Number(sumCO2).divide(1e6));
   print('Mean [t CO₂/ha]:', meanCO2);
   print('Sequestration (<0) [Mt CO₂]:', ee.Number(sumNeg).divide(1e6));
@@ -256,9 +267,9 @@ function carbonFromAgb(agbImg, fr){
   if (EXPORT_CO2){
     Export.image.toDrive({
       image: co2.toFloat(),
-      description: 'CO2_diff_' + y0 + '_' + y1 + '_100m_EPSG25833',
+      description: 'CO2_diff_AGBonly_' + y0 + '_' + y1 + '_100m_EPSG25833',
       folder: DRIVE_FOLDER,
-      fileNamePrefix: 'CO2_diff_' + y0 + '_' + y1 + '_100m_EPSG25833',
+      fileNamePrefix: 'CO2_diff_AGBonly_' + y0 + '_' + y1 + '_100m_EPSG25833',
       region: ROI, crs: CRS, scale: SCALE100, maxPixels: 1e13
     });
   }
