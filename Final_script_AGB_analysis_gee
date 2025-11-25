@@ -13,8 +13,8 @@
 var ROI_ASSET_ID = 'projects/tidy-forest-404511/assets/hranice_cr';
 
 // (B) Years
-var YEAR_CARBON       = 2018;  // map of carbon for this year (select year 2018–2024)
-var EMISS_START_YEAR  = 2018;  // start year for CO₂ change (select year 2018–2023)
+var YEAR_CARBON       = 2024;  // map of carbon for this year (select year 2018–2024)
+var EMISS_START_YEAR  = 2023;  // start year for CO₂ change (select year 2018–2023)
 var EMISS_END_YEAR    = 2024;  // end year for CO₂ change (select year, must be > start)
 
 // (C) Visualization
@@ -101,7 +101,6 @@ function loadForestFracs(year){
 }
 
 // Convert AGB (t/ha) to carbon (t C/ha) at 100 m using DW+HR types
-
 function carbonFromAgb(agbImg, fr){
   var agb100 = agbImg.reproject(proj100).rename('AGB');
   var m      = agb100.updateMask(fr.forestMask);
@@ -150,11 +149,22 @@ function carbonFromAgb(agbImg, fr){
 
   var cBroad = carbon.updateMask(fr.broadMaj);
   var cConif = carbon.updateMask(fr.conifMaj);
+
   var sumBroad = cBroad.multiply(ha).reduceRegion({
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('carbon');
+
   var sumConif = cConif.multiply(ha).reduceRegion({
     reducer: ee.Reducer.sum(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
+  }).get('carbon');
+
+  // >>> NEW: mean carbon density [t C/ha] for each forest type
+  var meanC_broad = cBroad.reduceRegion({
+    reducer: ee.Reducer.mean(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
+  }).get('carbon');
+
+  var meanC_conif = cConif.reduceRegion({
+    reducer: ee.Reducer.mean(), geometry: ROI, scale: SCALE100, maxPixels: 1e13
   }).get('carbon');
 
   var areaForest = fr.forestMask.multiply(ha).reduceRegion({
@@ -173,7 +183,9 @@ function carbonFromAgb(agbImg, fr){
   print('Total [Mt C]:', ee.Number(sumC).divide(1e6));
   print('Mean [t C/ha]:', meanC);
   print('Broadleaf [Mt C]:', ee.Number(sumBroad).divide(1e6));
+  print('Broadleaf mean [t C/ha]:', meanC_broad);
   print('Conifer [Mt C]:', ee.Number(sumConif).divide(1e6));
+  print('Conifer mean [t C/ha]:', meanC_conif);
   print('Forest area [thous. ha]:', ee.Number(areaForest).divide(1e3));
   print('  of which broadleaf [thous. ha]:', ee.Number(areaBroad).divide(1e3));
   print('  of which conifer [thous. ha]:', ee.Number(areaConif).divide(1e3));
@@ -274,4 +286,3 @@ function carbonFromAgb(agbImg, fr){
     });
   }
 })();
-
