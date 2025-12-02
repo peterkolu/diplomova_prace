@@ -8,8 +8,7 @@
       flexible band names → broadleaf_share, conifer_share, forest_mask.
   • Majority masks (broadleaf/conifer) with threshold MAJ.
   • Samples GEDI per class (≤10k pts each, 25 m), filters non-null.
-  • Reports unweighted (mean, sd, n) and weighted (1/SE²) stats
-      including effective n and 95% CI.
+  • Reports unweighted (mean, sd, n)
   • Optional: export sampled points to Drive (CSV).
 
   Inputs to check:
@@ -110,44 +109,11 @@ function unweightedStats(fc){
   );
 }
 
-// weighted by 1/SE^2 (capped), returns {wMean,wStd,nEff,ci95}
-function weightedStats(fc){
-  var fcW = fc.map(function(f){
-    var se = ee.Number(f.get('agbd_se'));
-    var w  = ee.Algorithms.If(se, ee.Number(1).divide(se.pow(2)).min(1e6), null);
-    return ee.Feature(f).set({
-      w: w,
-      w_agbd: ee.Algorithms.If(w, ee.Number(f.get('agbd')).multiply(ee.Number(w)), null)
-    });
-  }).filter(ee.Filter.notNull(['w','w_agbd']));
-
-  var sum_w_agbd = ee.Number(fcW.aggregate_sum('w_agbd'));
-  var sum_w      = ee.Number(fcW.aggregate_sum('w'));
-  var wMean      = sum_w_agbd.divide(sum_w);
-
-  var wVar = ee.Number(fcW.map(function(f){
-      var x = ee.Number(f.get('agbd'));
-      var w = ee.Number(f.get('w'));
-      return ee.Feature(null, {'term': w.multiply(x.subtract(wMean).pow(2))});
-    }).aggregate_sum('term')).divide(sum_w);
-  var wStd = wVar.sqrt();
-
-  var sum_w2 = ee.Number(fcW.map(function(f){
-      var w = ee.Number(f.get('w'));
-      return ee.Feature(null, {'w2': w.pow(2)});
-    }).aggregate_sum('w2'));
-  var nEff = sum_w.pow(2).divide(sum_w2);
-
-  var ci95 = wStd.divide(nEff.sqrt()).multiply(1.96);
-  return ee.Dictionary({wMean: wMean, wStd: wStd, nEff: nEff, ci95: ci95});
-}
 
 print('UNWEIGHTED — broadleaf [mean, sd, n]:', unweightedStats(ptsBroad));
 print('UNWEIGHTED — conifer   [mean, sd, n]:', unweightedStats(ptsConif));
-print('WEIGHTED (1/SE^2) — broadleaf:', weightedStats(ptsBroad));
-print('WEIGHTED (1/SE^2) — conifer  :', weightedStats(ptsConif));
 
-// ---------------- Optional export ----------------
+//  Optional export 
 /*
 Export.table.toDrive({
   collection: ptsBroad,
