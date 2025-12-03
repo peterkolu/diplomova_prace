@@ -1,0 +1,88 @@
+// ************************************************************
+// This script creates a forest fraction map (100 m resolution) for the year 2018
+// by intersecting two datasets:
+// (1) Copernicus High Resolution Layer (HRL) for forest type (deciduous/coniferous)
+// (2) Dynamic World tree probability for summer season
+// The output includes three bands: coniferous fraction, deciduous fraction, and binary forest mask.
+// ************************************************************
+
+// INPUTS 
+var hraniceCR = ee.FeatureCollection('projects/tidy-forest-404511/assets/hranice_cr');
+var hrImage   = ee.Image('projects/tidy-forest-404511/assets/HE_2021_10m');
+
+// Dynamic World: summer 2021, 'trees' probability (0–1)
+var dwTreesProb = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
+  .filterDate('2021-06-01', '2021-09-30')
+  .filterBounds(hraniceCR)
+  .select('trees')
+  .mean(); // summer average
+
+// HR Copernicus 
+var hrConiferous = hrImage.eq(2);   // 1 = deciduous, 2 = coniferous
+var hrDeciduous  = hrImage.eq(1);
+var hrForestMask = hrConiferous.or(hrDeciduous);
+
+//  DW forest mask (threshold ≥ 0.5) 
+var dwForestMask = dwTreesProb.gte(0.5);
+
+//  INTERSECTION (10 m) 
+var forestIntersection10m = hrForestMask.and(dwForestMask);
+
+// Forest type masks within intersection (10 m)
+var coniferousInIntersect10m = hrConiferous.and(dwForestMask);
+var deciduousInIntersect10m  = hrDeciduous.and(dwForestMask);
+
+//  AGGREGATION TO 100 m 
+var crs   = 'EPSG:25833';
+var scale = 100;
+
+// Coniferous fraction within each 100 m cell
+var coniferousFraction100m = coniferousInIntersect10m
+  .unmask(0)
+  .reduceResolution({ reducer: ee.Reducer.mean(), maxPixels: 10000 })
+  .reproject({ crs: crs, scale: scale })
+  .clamp(0, 1)
+  .toFloat()
+  .rename('coniferous_fraction');
+
+// Deciduous fraction within each 100 m cell
+var deciduousFraction100m = deciduousInIntersect10m
+  .unmask(0)
+  .reduceResolution({ reducer: ee.Reducer.mean(), maxPixels: 10000 })
+  .reproject({ crs: crs, scale: scale })
+  .clamp(0, 1)
+  .toFloat()
+  .rename('deciduous_fraction');
+
+// Forest presence fraction in each 100 m cell
+var forestFraction100m = forestIntersection10m
+  .unmask(0)
+  .reduceResolution({ reducer: ee.Reducer.mean(), maxPixels: 10000 })
+  .reproject({ crs: crs, scale: scale })
+  .clamp(0, 1);
+
+// Binary forest mask: cell is forest if ≥ 50% of 10 m pixels are forest
+var forestMask100m = forestFraction100m
+  .gte(0.5)
+  .toFloat()
+  .rename('forest_mask'); // 1 = forest, 0 = non-forest
+
+//  OUTPUT 
+var result = ee.Image.cat([
+  coniferousFraction100m,
+  deciduousFraction100m,
+  forestMask100m
+]).clip(hraniceCR);
+
+// EXPORT TO GOOGLE DRIVE 
+Export.image.toDrive({
+  image: result,
+  description: 'forest_100m_2018_3bands_toDrive',
+  folder: 'GEE_exports',
+  fileNamePrefix: 'forest_100m_2018_3bands',
+  region: hraniceCR.geometry(),
+  scale: scale,
+  crs: crs,
+  maxPixels: 1e13,
+  fileFormat: 'GeoTIFF'
+});
